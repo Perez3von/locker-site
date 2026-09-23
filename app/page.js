@@ -494,7 +494,7 @@ export default function Home() {
             }
             onKeyDown={handleKeyDown}
             placeholder={
-              "Scan an ID or paste a list...\nEMP-90421\nEMP-88301"
+              "Scan an ID or paste a list..."
             }
             autoFocus
           />
