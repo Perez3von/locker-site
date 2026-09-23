@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 import {
   useEffect,
   useMemo,
@@ -8,39 +10,16 @@ import {
 } from "react";
 
 import {
-  commitActiveScans,
-  removeActiveScan,
-  removeActiveScans,
-  subscribeToActiveScans,
-  updateActiveScan,
+  sendToWip,
+  subscribeToWip,
 } from "../lib/firebase";
 
-/* =========================================================
-   CACHE SETTINGS
-========================================================= */
-
-const ACTIVE_CACHE_KEY =
-  "active-ids-cache-v3";
-
-const DRAFT_CACHE_KEY =
-  "active-ids-draft-v3";
-
-const ACTIVE_CACHE_DURATION =
-  5 * 60 * 1000;
-
-const DRAFT_CACHE_DURATION =
-  24 * 60 * 60 * 1000;
-
+const DRAFT_CACHE_KEY = "locker-collect-draft-v1";
+const DRAFT_CACHE_DURATION = 24 * 60 * 60 * 1000;
 const DRAFT_SAVE_DEBOUNCE = 400;
 
-/* =========================================================
-   HELPERS
-========================================================= */
-
 function normalizeId(value) {
-  return String(value || "")
-    .trim()
-    .toUpperCase();
+  return String(value || "").trim().toUpperCase();
 }
 
 function parseIds(text) {
@@ -54,352 +33,162 @@ function parseIds(text) {
   ];
 }
 
-function formatTime(timestamp) {
-  if (!timestamp) return "";
-
-  return new Intl.DateTimeFormat(
-    "en-US",
-    {
-      hour: "numeric",
-      minute: "2-digit",
-    }
-  ).format(new Date(timestamp));
-}
-
-function getDateKey(timestamp) {
-  const date = new Date(timestamp);
-
-  return [
-    date.getFullYear(),
-    date.getMonth(),
-    date.getDate(),
-  ].join("-");
-}
-
-function getDateLabel(timestamp) {
-  const target = new Date(timestamp);
-  const today = new Date();
-
-  const targetStart = new Date(
-    target.getFullYear(),
-    target.getMonth(),
-    target.getDate()
-  );
-
-  const todayStart = new Date(
-    today.getFullYear(),
-    today.getMonth(),
-    today.getDate()
-  );
-
-  const difference = Math.round(
-    (todayStart.getTime() -
-      targetStart.getTime()) /
-      86400000
-  );
-
-  if (difference === 0) {
-    return "Today";
-  }
-
-  if (difference === 1) {
-    return "Yesterday";
-  }
-
-  return target.toLocaleDateString(
-    "en-US",
-    {
-      month: "short",
-      day: "numeric",
-      year:
-        target.getFullYear() !==
-        today.getFullYear()
-          ? "numeric"
-          : undefined,
-    }
-  );
-}
-
-/* =========================================================
-   CACHE
-========================================================= */
-
-function readCache(key, maxAge) {
+function readDraft() {
   try {
-    const raw =
-      localStorage.getItem(key);
+    const raw = localStorage.getItem(DRAFT_CACHE_KEY);
 
-    if (!raw) return null;
+    if (!raw) return [];
 
     const cache = JSON.parse(raw);
 
     if (
       !cache.savedAt ||
-      !Array.isArray(cache.data)
+      !Array.isArray(cache.data) ||
+      Date.now() - cache.savedAt > DRAFT_CACHE_DURATION
     ) {
-      localStorage.removeItem(key);
-      return null;
-    }
-
-    if (
-      Date.now() - cache.savedAt >
-      maxAge
-    ) {
-      localStorage.removeItem(key);
-      return null;
+      localStorage.removeItem(DRAFT_CACHE_KEY);
+      return [];
     }
 
     return cache.data;
   } catch {
-    localStorage.removeItem(key);
-    return null;
+    return [];
   }
 }
 
-function writeCache(key, data) {
+function writeDraft(data) {
   try {
     localStorage.setItem(
-      key,
+      DRAFT_CACHE_KEY,
       JSON.stringify({
         savedAt: Date.now(),
         data,
       })
     );
   } catch (error) {
-    console.error(
-      "Cache write failed:",
-      error
-    );
+    console.error("Draft save failed:", error);
   }
 }
 
-/* =========================================================
-   PAGE
-========================================================= */
+function UploadIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="M12 16V4M7.5 8.5 12 4l4.5 4.5"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+
+      <path
+        d="M5 13v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+function ScanIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+    >
+      <path
+        d="M5 8V5h3M16 5h3v3M19 16v3h-3M8 19H5v-3"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+
+      <path
+        d="M8 12h8"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
 
 export default function Home() {
   const inputRef = useRef(null);
 
-  const [activeScans, setActiveScans] =
-    useState([]);
+  const [input, setInput] = useState("");
+  const [draftIds, setDraftIds] = useState([]);
+  const [wipItems, setWipItems] = useState([]);
 
-  const [draftIds, setDraftIds] =
-    useState([]);
+  const [draftLoaded, setDraftLoaded] = useState(false);
+  const [connected, setConnected] = useState(false);
+  const [sending, setSending] = useState(false);
 
-  const [input, setInput] =
-    useState("");
-
-  const [selectedIds, setSelectedIds] =
-    useState(() => new Set());
-
-  const [loading, setLoading] =
-    useState(true);
-
-  const [connected, setConnected] =
-    useState(false);
-
-  const [draftLoaded, setDraftLoaded] =
-    useState(false);
-
-  const [committing, setCommitting] =
-    useState(false);
-
-  const [removingSelected, setRemovingSelected] =
-    useState(false);
-
-  const [editingId, setEditingId] =
-    useState(null);
-
-  const [editingValue, setEditingValue] =
-    useState("");
-
-  const [message, setMessage] =
-    useState("");
-
+  const [message, setMessage] = useState("");
   const [messageType, setMessageType] =
     useState("success");
 
   /* =======================================================
-     INITIAL LOAD
+     INITIALIZE
   ======================================================= */
 
   useEffect(() => {
-    const activeCache = readCache(
-      ACTIVE_CACHE_KEY,
-      ACTIVE_CACHE_DURATION
-    );
-
-    if (activeCache) {
-      setActiveScans(activeCache);
-      setLoading(false);
-    }
-
-    const draftCache = readCache(
-      DRAFT_CACHE_KEY,
-      DRAFT_CACHE_DURATION
-    );
-
-    if (draftCache) {
-      setDraftIds(draftCache);
-    }
-
+    setDraftIds(readDraft());
     setDraftLoaded(true);
 
-    const unsubscribe =
-      subscribeToActiveScans(
-        (scans) => {
-          setActiveScans(scans);
-
-          writeCache(
-            ACTIVE_CACHE_KEY,
-            scans
-          );
-
-          setConnected(true);
-          setLoading(false);
-        },
-
-        () => {
-          setConnected(false);
-          setLoading(false);
-
-          if (!activeCache) {
-            showMessage(
-              "Could not load the shared list.",
-              "error"
-            );
-          }
-        }
-      );
+    const unsubscribe = subscribeToWip(
+      (items) => {
+        setWipItems(items);
+        setConnected(true);
+      },
+      () => {
+        setConnected(false);
+      }
+    );
 
     return unsubscribe;
   }, []);
 
   /* =======================================================
-     DEBOUNCED LOCAL DRAFT SAVE
+     SAVE LOCAL DRAFT
   ======================================================= */
 
   useEffect(() => {
     if (!draftLoaded) return;
 
-    const timer = setTimeout(
-      () => {
-        writeCache(
-          DRAFT_CACHE_KEY,
-          draftIds
-        );
-      },
-      DRAFT_SAVE_DEBOUNCE
-    );
+    const timer = setTimeout(() => {
+      writeDraft(draftIds);
+    }, DRAFT_SAVE_DEBOUNCE);
 
-    return () =>
-      clearTimeout(timer);
+    return () => clearTimeout(timer);
   }, [draftIds, draftLoaded]);
 
-  /* =======================================================
-     REMOVE IDS FROM DRAFT IF THEY BECOME ACTIVE
+  const wipIdSet = useMemo(
+    () =>
+      new Set(
+        wipItems.map((item) => item.internalId)
+      ),
+    [wipItems]
+  );
 
-     Example:
-     User A has EMP-100 staged.
-     User B adds EMP-100.
-     User A's listener receives it and EMP-100 disappears
-     from their draft because it no longer needs committing.
+  /* =======================================================
+     REMOVE IDS FROM LOCAL DRAFT IF ANOTHER USER SENDS THEM
+     TO WIP
   ======================================================= */
 
   useEffect(() => {
     if (!connected) return;
 
-    const activeSet = new Set(
-      activeScans.map(
-        (scan) => scan.internalId
-      )
-    );
-
     setDraftIds((current) =>
-      current.filter(
-        (id) => !activeSet.has(id)
-      )
+      current.filter((id) => !wipIdSet.has(id))
     );
-  }, [activeScans, connected]);
-
-  /* =======================================================
-     CLEAN LOCAL SELECTION
-  ======================================================= */
-
-  useEffect(() => {
-    const activeSet = new Set(
-      activeScans.map(
-        (scan) => scan.internalId
-      )
-    );
-
-    setSelectedIds((current) => {
-      const next = new Set(
-        [...current].filter((id) =>
-          activeSet.has(id)
-        )
-      );
-
-      return next;
-    });
-  }, [activeScans]);
-
-  /* =======================================================
-     DERIVED DATA
-  ======================================================= */
-
-  const activeIdSet = useMemo(
-    () =>
-      new Set(
-        activeScans.map(
-          (scan) => scan.internalId
-        )
-      ),
-    [activeScans]
-  );
-
-  const groupedScans = useMemo(() => {
-    const groups = {};
-
-    [...activeScans]
-      .sort(
-        (a, b) =>
-          b.scannedAt -
-          a.scannedAt
-      )
-      .forEach((scan) => {
-        const key = getDateKey(
-          scan.scannedAt
-        );
-
-        if (!groups[key]) {
-          groups[key] = {
-            key,
-            timestamp:
-              scan.scannedAt,
-            scans: [],
-          };
-        }
-
-        groups[key].scans.push(
-          scan
-        );
-      });
-
-    return Object.values(groups).sort(
-      (a, b) =>
-        b.timestamp - a.timestamp
-    );
-  }, [activeScans]);
-
-  const allSelected =
-    activeScans.length > 0 &&
-    selectedIds.size ===
-      activeScans.length;
-
-  /* =======================================================
-     MESSAGE
-  ======================================================= */
+  }, [wipIdSet, connected]);
 
   function showMessage(
     text,
@@ -410,82 +199,71 @@ export default function Home() {
   }
 
   /* =======================================================
-     ADD IDS TO LOCAL DRAFT
-
-     NO FIREBASE WRITE.
+     STAGE IDS
   ======================================================= */
 
   function stageIds(text) {
     const parsed = parseIds(text);
 
-    if (parsed.length === 0) {
-      return;
-    }
+    if (parsed.length === 0) return;
 
-    const currentDraft =
-      new Set(draftIds);
+    const existingDraft = new Set(draftIds);
 
-    const newIds = [];
+    const added = [];
 
-    let activeDuplicates = 0;
-    let draftDuplicates = 0;
+    let alreadyWip = 0;
+    let alreadyDraft = 0;
 
-    for (const id of parsed) {
-      if (activeIdSet.has(id)) {
-        activeDuplicates++;
-        continue;
+    parsed.forEach((id) => {
+      if (wipIdSet.has(id)) {
+        alreadyWip++;
+        return;
       }
 
-      if (currentDraft.has(id)) {
-        draftDuplicates++;
-        continue;
+      if (existingDraft.has(id)) {
+        alreadyDraft++;
+        return;
       }
 
-      currentDraft.add(id);
-      newIds.push(id);
-    }
+      existingDraft.add(id);
+      added.push(id);
+    });
 
-    if (newIds.length > 0) {
+    if (added.length > 0) {
       setDraftIds((current) => [
         ...current,
-        ...newIds,
+        ...added,
       ]);
     }
 
-    const status = [];
+    const parts = [];
 
-    if (newIds.length > 0) {
-      status.push(
-        `${newIds.length} staged`
+    if (added.length) {
+      parts.push(`${added.length} ready`);
+    }
+
+    if (alreadyWip) {
+      parts.push(
+        `${alreadyWip} already in WIP`
       );
     }
 
-    if (activeDuplicates > 0) {
-      status.push(
-        `${activeDuplicates} already active`
-      );
-    }
-
-    if (draftDuplicates > 0) {
-      status.push(
-        `${draftDuplicates} already staged`
+    if (alreadyDraft) {
+      parts.push(
+        `${alreadyDraft} already staged`
       );
     }
 
     showMessage(
-      status.join(" · ") ||
-        "No new IDs"
+      parts.join(" · ") || "No new IDs"
     );
   }
-
-  /* =======================================================
-     STAGE BUTTON
-  ======================================================= */
 
   function handleStage() {
     if (!input.trim()) return;
 
     stageIds(input);
+
     setInput("");
 
     requestAnimationFrame(() => {
@@ -494,16 +272,10 @@ export default function Home() {
   }
 
   /* =======================================================
-     PHYSICAL SCANNER
-
-     A scanner normally types one ID and sends Enter.
-
-     If the textarea has one line, Enter stages it.
-
-     Shift+Enter still allows a manual newline.
+     SCANNER ENTER
   ======================================================= */
 
-  function handleInputKeyDown(event) {
+  function handleKeyDown(event) {
     if (
       event.key !== "Enter" ||
       event.shiftKey
@@ -511,26 +283,15 @@ export default function Home() {
       return;
     }
 
-    const ids = parseIds(input);
+    const parsed = parseIds(input);
 
-    /*
-    If one ID exists, treat Enter like a physical scanner.
-
-    For a manually pasted multi-ID list, the user can use
-    the Stage IDs button.
-    */
-
-    if (ids.length === 1) {
+    if (parsed.length === 1) {
       event.preventDefault();
 
       stageIds(input);
       setInput("");
     }
   }
-
-  /* =======================================================
-     DRAFT MANAGEMENT
-  ======================================================= */
 
   function removeDraft(id) {
     setDraftIds((current) =>
@@ -544,52 +305,41 @@ export default function Home() {
     setDraftIds([]);
     setInput("");
 
-    showMessage("Draft cleared");
+    showMessage("Collection cleared");
 
-    inputRef.current?.focus();
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+    });
   }
 
   /* =======================================================
-     COMMIT DRAFT TO FIRESTORE
+     SEND TO FIREBASE WIP
   ======================================================= */
 
-  async function handleCommit() {
+  async function handleSendToWip() {
     if (
       draftIds.length === 0 ||
-      committing
+      sending
     ) {
       return;
     }
 
     if (!connected) {
       showMessage(
-        "Database connection is unavailable. Your draft is still saved locally.",
+        "WIP is currently unavailable. Your IDs are still saved on this device.",
         "error"
       );
 
       return;
     }
 
-    const idsToCommit = [
-      ...draftIds,
-    ];
+    const sendingIds = [...draftIds];
 
-    setCommitting(true);
+    setSending(true);
 
     try {
       const result =
-        await commitActiveScans(
-          idsToCommit
-        );
-
-      /*
-      Remove only IDs that Firestore either:
-
-      1. successfully added
-      2. confirmed already existed
-
-      Failed IDs remain in the local draft.
-      */
+        await sendToWip(sendingIds);
 
       const completed = new Set([
         ...result.added,
@@ -598,257 +348,139 @@ export default function Home() {
 
       setDraftIds((current) =>
         current.filter(
-          (id) =>
-            !completed.has(id)
+          (id) => !completed.has(id)
         )
       );
 
-      if (
-        result.failed.length > 0
-      ) {
+      if (result.failed.length) {
         showMessage(
-          `${result.added.length} added · ${result.skipped.length} already active · ${result.failed.length} kept in draft`,
+          `${result.added.length} sent · ${result.failed.length} could not be sent and remain here`,
           "error"
-        );
-      } else if (
-        result.skipped.length > 0
-      ) {
-        showMessage(
-          `${result.added.length} added · ${result.skipped.length} already active`
         );
       } else {
         showMessage(
-          `${result.added.length} added`
+          result.added.length === 1
+            ? "1 ID sent to WIP"
+            : `${result.added.length} IDs sent to WIP`
         );
       }
     } catch (error) {
       showMessage(
         error?.message ||
-          "Could not add IDs. Your draft is still saved locally.",
+          "Could not send to WIP. Your IDs remain saved here.",
         "error"
       );
     } finally {
-      setCommitting(false);
+      setSending(false);
 
       inputRef.current?.focus();
     }
   }
 
-  /* =======================================================
-     ACTIVE SELECTION
-  ======================================================= */
-
-  function toggleSelection(id) {
-    setSelectedIds((current) => {
-      const next =
-        new Set(current);
-
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-
-      return next;
-    });
-  }
-
-  function selectAll() {
-    setSelectedIds(
-      new Set(
-        activeScans.map(
-          (scan) =>
-            scan.internalId
-        )
-      )
-    );
-  }
-
-  function clearSelection() {
-    setSelectedIds(new Set());
-  }
-
-  /* =======================================================
-     EDIT ACTIVE ID
-  ======================================================= */
-
-  function beginEdit(scan) {
-    setEditingId(
-      scan.internalId
-    );
-
-    setEditingValue(
-      scan.internalId
-    );
-  }
-
-  function cancelEdit() {
-    setEditingId(null);
-    setEditingValue("");
-  }
-
-  async function saveEdit() {
-    const newId =
-      normalizeId(editingValue);
-
-    if (!editingId || !newId) {
-      return;
-    }
-
-    if (newId === editingId) {
-      cancelEdit();
-      return;
-    }
-
-    try {
-      await updateActiveScan(
-        editingId,
-        newId
-      );
-
-      setSelectedIds(
-        (current) => {
-          const next =
-            new Set(current);
-
-          if (
-            next.has(editingId)
-          ) {
-            next.delete(
-              editingId
-            );
-
-            next.add(newId);
-          }
-
-          return next;
-        }
-      );
-
-      showMessage(
-        `${editingId} changed to ${newId}`
-      );
-
-      cancelEdit();
-    } catch (error) {
-      showMessage(
-        error?.message ||
-          "Could not update ID.",
-        "error"
-      );
-    }
-  }
-
-  /* =======================================================
-     DELETE ACTIVE ID
-  ======================================================= */
-
-  async function handleRemove(id) {
-    try {
-      await removeActiveScan(id);
-
-      showMessage(
-        `${id} removed`
-      );
-    } catch (error) {
-      showMessage(
-        error?.message ||
-          "Could not remove ID.",
-        "error"
-      );
-    }
-  }
-
-  /* =======================================================
-     DELETE SELECTED
-  ======================================================= */
-
-  async function handleRemoveSelected() {
-    const ids = [
-      ...selectedIds,
-    ];
-
-    if (
-      ids.length === 0 ||
-      removingSelected
-    ) {
-      return;
-    }
-
-    setRemovingSelected(true);
-
-    try {
-      await removeActiveScans(ids);
-
-      setSelectedIds(
-        new Set()
-      );
-
-      showMessage(
-        `${ids.length} removed`
-      );
-    } catch (error) {
-      showMessage(
-        error?.message ||
-          "Could not remove selected IDs.",
-        "error"
-      );
-    } finally {
-      setRemovingSelected(false);
-    }
-  }
-
-  /* =======================================================
-     UI
-  ======================================================= */
-
   return (
     <main className="app-shell">
-      {/* =================================================
-          HEADER
-      ================================================== */}
+      {/* ===================================================
+          NAVIGATION
+      =================================================== */}
 
       <header className="topbar">
         <div className="topbar-inner">
-          <div>
-            <h1>Active IDs</h1>
+          <Link
+            href="/"
+            className="brand"
+          >
+            Locker
+          </Link>
 
-            <p>
-              Shared ID list
-            </p>
-          </div>
+          <nav className="nav-tabs">
+            <Link
+              href="/"
+              className="nav-tab active"
+            >
+              Collect
+            </Link>
+
+            <Link
+              href="/wip"
+              className="nav-tab"
+            >
+              WIP
+
+              {wipItems.length > 0 && (
+                <span className="nav-count">
+                  {wipItems.length}
+                </span>
+              )}
+            </Link>
+          </nav>
 
           <div className="sync-status">
             <span
               className={`sync-dot ${
-                connected
-                  ? "online"
-                  : ""
+                connected ? "online" : ""
               }`}
             />
 
             {connected
               ? "Synced"
-              : "Connecting"}
+              : "Offline"}
           </div>
         </div>
       </header>
 
-      <div className="content">
-        {/* =================================================
-            ADD / STAGE IDS
-        ================================================== */}
+      {/* ===================================================
+          COLLECT PAGE
+      =================================================== */}
 
-        <section className="add-card">
-          <div className="section-heading">
+      <div
+        className={`collect-page ${
+          draftIds.length > 0
+            ? "has-floating-action"
+            : ""
+        }`}
+      >
+        {/* HERO */}
+
+        <section className="collect-hero">
+          <div className="hero-orb hero-orb-one" />
+          <div className="hero-orb hero-orb-two" />
+
+          <div className="hero-content">
+            <div className="hero-icon">
+              <ScanIcon />
+            </div>
+
             <div>
-              <h2>Add IDs</h2>
+              <h1>Collect IDs</h1>
 
               <p>
-                Scan one ID or paste multiple IDs.
-                Review them before adding.
+                Scan individually or paste a
+                list. Review everything before
+                sending it to WIP.
               </p>
             </div>
+          </div>
+        </section>
+
+        {/* COLLECTOR */}
+
+        <section className="collector-card">
+          <div className="collector-label">
+            <div>
+              <span className="eyebrow">
+                INPUT
+              </span>
+
+              <h2>Scan or paste IDs</h2>
+            </div>
+
+            {draftIds.length > 0 && (
+              <div className="ready-pill">
+                <span />
+
+                {draftIds.length} ready
+              </div>
+            )}
           </div>
 
           <textarea
@@ -860,119 +492,96 @@ export default function Home() {
                 event.target.value
               )
             }
-            onKeyDown={
-              handleInputKeyDown
-            }
+            onKeyDown={handleKeyDown}
             placeholder={
-              "Scan or paste IDs...\n\nEMP-90421\nEMP-88301\nEMP-84920"
+              "Scan an ID or paste a list...\nEMP-90421\nEMP-88301"
             }
             autoFocus
           />
 
-          <div className="input-actions">
-            <span className="input-hint">
-              Enter stages a scanned ID
-            </span>
+          <div className="input-footer">
+            <div className="scanner-hint">
+              <div className="key-cap">
+                ↵
+              </div>
+
+              Scanner Enter adds one ID
+            </div>
 
             <button
-              className="secondary-button"
+              className="stage-button"
               onClick={handleStage}
-              disabled={
-                !input.trim()
-              }
+              disabled={!input.trim()}
             >
-              Stage IDs
+              <span>+</span>
+              Add to collection
             </button>
           </div>
 
-          {/* ===============================================
-              DRAFT
-          ================================================ */}
+          {/* COLLECTION */}
 
           {draftIds.length > 0 && (
-            <div className="draft">
-              <div className="draft-header">
+            <div className="collection-area">
+              <div className="collection-header">
                 <div>
-                  <h3>Draft</h3>
-
-                  <span>
-                    {draftIds.length}{" "}
-                    {draftIds.length === 1
-                      ? "ID"
-                      : "IDs"}{" "}
-                    ready
+                  <span className="eyebrow">
+                    COLLECTION
                   </span>
+
+                  <h3>
+                    Ready to send
+                  </h3>
                 </div>
 
                 <button
-                  className="text-button"
+                  className="quiet-button danger-text"
                   onClick={clearDraft}
                 >
-                  Clear
+                  Clear all
                 </button>
               </div>
 
-              <div className="draft-list">
-                {draftIds.map(
-                  (id) => (
-                    <div
-                      className="draft-row"
-                      key={id}
-                    >
-                      <span>{id}</span>
-
-                      <button
-                        className="icon-button"
-                        onClick={() =>
-                          removeDraft(id)
-                        }
-                        aria-label={`Remove ${id}`}
-                        title="Remove"
-                      >
-                        ×
-                      </button>
+              <div className="id-grid">
+                {draftIds.map((id) => (
+                  <div
+                    className="id-chip"
+                    key={id}
+                  >
+                    <div className="id-chip-icon">
+                      <span />
                     </div>
-                  )
-                )}
-              </div>
 
-              <div className="draft-footer">
-                <div className="local-save">
-                  <span className="local-dot" />
+                    <span className="id-value">
+                      {id}
+                    </span>
 
-                  Saved locally
-                </div>
-
-                <button
-                  className="primary-button"
-                  onClick={
-                    handleCommit
-                  }
-                  disabled={
-                    committing ||
-                    !connected
-                  }
-                >
-                  {committing
-                    ? "Adding..."
-                    : `Add ${draftIds.length} to Active`}
-                </button>
+                    <button
+                      className="chip-remove"
+                      onClick={() =>
+                        removeDraft(id)
+                      }
+                      aria-label={`Remove ${id}`}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
               </div>
             </div>
           )}
 
+          {/* STATUS */}
+
           {message && (
             <div
-              className={`message ${
-                messageType ===
-                "error"
+              className={`toast-message ${
+                messageType === "error"
                   ? "error"
                   : ""
               }`}
             >
-              <span>
-                {messageType ===
-                "error"
+              <span className="toast-icon">
+                {messageType === "error"
                   ? "!"
                   : "✓"}
               </span>
@@ -983,259 +592,58 @@ export default function Home() {
         </section>
 
         {/* =================================================
-            ACTIVE LIST HEADER
-        ================================================== */}
+            STICKY WIP ACTION
 
-        <section className="active-section">
-          <div className="active-header">
-            <div className="active-title">
-              <h2>Active</h2>
+            Appears whenever IDs are staged and stays
+            accessible while scrolling through long lists.
+        ================================================= */}
 
-              <span className="count">
-                {activeScans.length}
-              </span>
-            </div>
+        {draftIds.length > 0 && (
+          <div className="floating-send">
+            <div className="floating-send-inner">
+              <div className="floating-send-count">
+                <div className="floating-send-icon">
+                  <UploadIcon />
+                </div>
 
-            <div className="list-actions">
+                <div className="floating-send-copy">
+                  <strong>
+                    {draftIds.length}{" "}
+                    {draftIds.length === 1
+                      ? "ID"
+                      : "IDs"}{" "}
+                    ready
+                  </strong>
+
+                  <span>
+                    Ready to move into WIP
+                  </span>
+                </div>
+              </div>
+
               <button
-                className="text-button"
+                className="floating-send-button"
                 onClick={
-                  allSelected
-                    ? clearSelection
-                    : selectAll
+                  handleSendToWip
                 }
                 disabled={
-                  activeScans.length ===
-                  0
+                  sending ||
+                  !connected
                 }
               >
-                {allSelected
-                  ? "Clear selection"
-                  : "Select all"}
-              </button>
+                {sending
+                  ? "Sending..."
+                  : `Send ${draftIds.length} to WIP`}
 
-              {selectedIds.size >
-                0 && (
-                <button
-                  className="text-button danger"
-                  onClick={
-                    handleRemoveSelected
-                  }
-                  disabled={
-                    removingSelected
-                  }
-                >
-                  {removingSelected
-                    ? "Removing..."
-                    : `Remove selected (${selectedIds.size})`}
-                </button>
-              )}
+                {!sending && (
+                  <span className="send-arrow">
+                    →
+                  </span>
+                )}
+              </button>
             </div>
           </div>
-
-          {/* ===============================================
-              LOADING / EMPTY
-          ================================================ */}
-
-          {loading &&
-            activeScans.length ===
-              0 && (
-              <div className="empty-state">
-                <div className="empty-icon">
-                  …
-                </div>
-
-                <h3>
-                  Loading IDs
-                </h3>
-
-                <p>
-                  Checking the shared list.
-                </p>
-              </div>
-            )}
-
-          {!loading &&
-            activeScans.length ===
-              0 && (
-              <div className="empty-state">
-                <div className="empty-icon">
-                  +
-                </div>
-
-                <h3>
-                  No active IDs
-                </h3>
-
-                <p>
-                  Add IDs above to get started.
-                </p>
-              </div>
-            )}
-
-          {/* ===============================================
-              DATE GROUPS
-          ================================================ */}
-
-          {groupedScans.map(
-            (group) => (
-              <div
-                className="date-group"
-                key={group.key}
-              >
-                <div className="date-label">
-                  <span>
-                    {getDateLabel(
-                      group.timestamp
-                    )}
-                  </span>
-
-                  <span className="date-count">
-                    {
-                      group.scans
-                        .length
-                    }
-                  </span>
-                </div>
-
-                <div className="active-list">
-                  {group.scans.map(
-                    (scan) => (
-                      <div
-                        className={`active-row ${
-                          selectedIds.has(
-                            scan.internalId
-                          )
-                            ? "selected"
-                            : ""
-                        }`}
-                        key={
-                          scan.internalId
-                        }
-                      >
-                        <input
-                          className="row-checkbox"
-                          type="checkbox"
-                          checked={selectedIds.has(
-                            scan.internalId
-                          )}
-                          onChange={() =>
-                            toggleSelection(
-                              scan.internalId
-                            )
-                          }
-                          aria-label={`Select ${scan.internalId}`}
-                        />
-
-                        {editingId ===
-                        scan.internalId ? (
-                          <div className="edit-row">
-                            <input
-                              className="edit-input"
-                              value={
-                                editingValue
-                              }
-                              onChange={(
-                                event
-                              ) =>
-                                setEditingValue(
-                                  event
-                                    .target
-                                    .value
-                                )
-                              }
-                              onKeyDown={(
-                                event
-                              ) => {
-                                if (
-                                  event.key ===
-                                  "Enter"
-                                ) {
-                                  saveEdit();
-                                }
-
-                                if (
-                                  event.key ===
-                                  "Escape"
-                                ) {
-                                  cancelEdit();
-                                }
-                              }}
-                              autoFocus
-                            />
-
-                            <button
-                              className="save-button"
-                              onClick={
-                                saveEdit
-                              }
-                            >
-                              Save
-                            </button>
-
-                            <button
-                              className="text-button"
-                              onClick={
-                                cancelEdit
-                              }
-                            >
-                              Cancel
-                            </button>
-                          </div>
-                        ) : (
-                          <>
-                            <div className="row-main">
-                              <strong>
-                                {
-                                  scan.internalId
-                                }
-                              </strong>
-
-                              <span>
-                                Added{" "}
-                                {formatTime(
-                                  scan.scannedAt
-                                )}
-                              </span>
-                            </div>
-
-                            <div className="row-actions">
-                              <button
-                                className="icon-button"
-                                onClick={() =>
-                                  beginEdit(
-                                    scan
-                                  )
-                                }
-                                aria-label={`Edit ${scan.internalId}`}
-                                title="Edit"
-                              >
-                                ✎
-                              </button>
-
-                              <button
-                                className="icon-button delete"
-                                onClick={() =>
-                                  handleRemove(
-                                    scan.internalId
-                                  )
-                                }
-                                aria-label={`Remove ${scan.internalId}`}
-                                title="Remove"
-                              >
-                                ×
-                              </button>
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    )
-                  )}
-                </div>
-              </div>
-            )
-          )}
-        </section>
+        )}
       </div>
     </main>
   );
