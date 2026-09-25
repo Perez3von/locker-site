@@ -1,0 +1,19 @@
+{
+  "id": "ba0a4985-c350-4b3f-9204-53387666c60b",
+  "packageId": "2025641",
+  "signatureField": "RETAG",
+  "canvasSignature": "IST",
+  "status": "completed",
+  "createdAt": "2026-09-25T06:04:14.343Z",
+  "startedAt": "2026-09-25T06:04:14.953Z",
+  "result": {
+    "status": "skipped",
+    "reason": "already_signed_out",
+    "packageId": "2025641",
+    "recordId": "dc956977-dbb1-f111-8b0b-005056b82b09",
+    "alreadySignedOut": true,
+    "wipRemoved": true,
+    "wipAlreadyMissing": false
+  },
+  "completedAt": "2026-09-25T06:04:18.078Z"
+}

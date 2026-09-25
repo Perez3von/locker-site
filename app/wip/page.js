@@ -16,7 +16,9 @@ import {
 } from "../../lib/firebase";
 
 function normalizeId(value) {
-  return String(value || "").trim().toUpperCase();
+  return String(value || "")
+    .trim()
+    .toUpperCase();
 }
 
 function formatTime(timestamp) {
@@ -59,7 +61,8 @@ function getDateLabel(timestamp) {
     month: "long",
     day: "numeric",
     year:
-      target.getFullYear() !== today.getFullYear()
+      target.getFullYear() !==
+      today.getFullYear()
         ? "numeric"
         : undefined,
   });
@@ -67,18 +70,33 @@ function getDateLabel(timestamp) {
 
 export default function WipPage() {
   const [items, setItems] = useState([]);
-  const [selected, setSelected] = useState(() => new Set());
 
-  const [connected, setConnected] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] =
+    useState(() => new Set());
 
-  const [editingId, setEditingId] = useState(null);
-  const [editingValue, setEditingValue] = useState("");
+  const [connected, setConnected] =
+    useState(false);
 
-  const [removing, setRemoving] = useState(false);
+  const [loading, setLoading] =
+    useState(true);
 
-  const [message, setMessage] = useState("");
-  const [messageType, setMessageType] = useState("success");
+  const [editingId, setEditingId] =
+    useState(null);
+
+  const [editingValue, setEditingValue] =
+    useState("");
+
+  const [removing, setRemoving] =
+    useState(false);
+
+  const [queueing, setQueueing] =
+    useState(false);
+
+  const [message, setMessage] =
+    useState("");
+
+  const [messageType, setMessageType] =
+    useState("success");
 
   useEffect(() => {
     const unsubscribe = subscribeToWip(
@@ -98,12 +116,16 @@ export default function WipPage() {
 
   useEffect(() => {
     const existing = new Set(
-      items.map((item) => item.internalId)
+      items.map(
+        (item) => item.internalId
+      )
     );
 
     setSelected((current) => {
       return new Set(
-        [...current].filter((id) => existing.has(id))
+        [...current].filter((id) =>
+          existing.has(id)
+        )
       );
     });
   }, [items]);
@@ -112,7 +134,9 @@ export default function WipPage() {
     const grouped = {};
 
     items.forEach((item) => {
-      const key = getDateKey(item.createdAt);
+      const key = getDateKey(
+        item.createdAt
+      );
 
       if (!grouped[key]) {
         grouped[key] = {
@@ -126,7 +150,8 @@ export default function WipPage() {
     });
 
     return Object.values(grouped).sort(
-      (a, b) => b.timestamp - a.timestamp
+      (a, b) =>
+        b.timestamp - a.timestamp
     );
   }, [items]);
 
@@ -134,7 +159,10 @@ export default function WipPage() {
     items.length > 0 &&
     selected.size === items.length;
 
-  function showMessage(text, type = "success") {
+  function showMessage(
+    text,
+    type = "success"
+  ) {
     setMessage(text);
     setMessageType(type);
   }
@@ -160,24 +188,94 @@ export default function WipPage() {
     }
 
     setSelected(
-      new Set(items.map((item) => item.internalId))
+      new Set(
+        items.map(
+          (item) => item.internalId
+        )
+      )
     );
+  }
+
+  async function signOutSelected() {
+    if (
+      !selected.size ||
+      queueing
+    ) {
+      return;
+    }
+
+    const ids = [...selected];
+
+    setQueueing(true);
+
+    try {
+      const response = await fetch(
+        "/api/automation/test",
+        {
+          method: "POST",
+
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+
+          body: JSON.stringify({
+            ids,
+          }),
+        }
+      );
+
+      const data =
+        await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          data.error ||
+            "Could not queue sign outs."
+        );
+      }
+
+      setSelected(new Set());
+
+      showMessage(
+        data.count === 1
+          ? "1 item queued for sign out"
+          : `${data.count} items queued for sign out`
+      );
+    } catch (error) {
+      showMessage(
+        error?.message ||
+          "Could not queue selected items.",
+        "error"
+      );
+    } finally {
+      setQueueing(false);
+    }
   }
 
   async function removeOne(id) {
     try {
       await removeWipItem(id);
-      showMessage(`${id} removed`);
+
+      showMessage(
+        `${id} removed`
+      );
     } catch (error) {
       showMessage(
-        error?.message || "Could not remove item.",
+        error?.message ||
+          "Could not remove item.",
         "error"
       );
     }
   }
 
   async function removeSelected() {
-    if (!selected.size || removing) return;
+    if (
+      !selected.size ||
+      removing
+    ) {
+      return;
+    }
 
     const ids = [...selected];
 
@@ -195,7 +293,8 @@ export default function WipPage() {
       );
     } catch (error) {
       showMessage(
-        error?.message || "Could not remove selected items.",
+        error?.message ||
+          "Could not remove selected items.",
         "error"
       );
     } finally {
@@ -204,8 +303,13 @@ export default function WipPage() {
   }
 
   function beginEdit(item) {
-    setEditingId(item.internalId);
-    setEditingValue(item.internalId);
+    setEditingId(
+      item.internalId
+    );
+
+    setEditingValue(
+      item.internalId
+    );
   }
 
   function cancelEdit() {
@@ -214,24 +318,38 @@ export default function WipPage() {
   }
 
   async function saveEdit() {
-    const newId = normalizeId(editingValue);
+    const newId =
+      normalizeId(editingValue);
 
-    if (!editingId || !newId) return;
+    if (
+      !editingId ||
+      !newId
+    ) {
+      return;
+    }
 
-    if (newId === editingId) {
+    if (
+      newId === editingId
+    ) {
       cancelEdit();
       return;
     }
 
     try {
-      await updateWipItem(editingId, newId);
+      await updateWipItem(
+        editingId,
+        newId
+      );
 
-      showMessage(`${editingId} changed to ${newId}`);
+      showMessage(
+        `${editingId} changed to ${newId}`
+      );
 
       cancelEdit();
     } catch (error) {
       showMessage(
-        error?.message || "Could not update item.",
+        error?.message ||
+          "Could not update item.",
         "error"
       );
     }
@@ -241,34 +359,54 @@ export default function WipPage() {
     <main className="app-shell">
       <header className="topbar">
         <div className="topbar-inner">
-          <Link href="/" className="brand">
+          <Link
+            href="/"
+            className="brand"
+          >
             Locker
           </Link>
 
-          <nav className="nav-tabs">
-            <Link href="/" className="nav-tab">
-              Collect
-            </Link>
+  <nav className="nav-tabs">
+  <Link
+    href="/"
+    className="nav-tab"
+  >
+    Collect
+  </Link>
 
-            <Link href="/wip" className="nav-tab active">
-              WIP
+  <Link
+    href="/wip"
+    className="nav-tab active"
+  >
+    WIP
 
-              {items.length > 0 && (
-                <span className="nav-count">
-                  {items.length}
-                </span>
-              )}
-            </Link>
-          </nav>
+    {items.length > 0 && (
+      <span className="nav-count">
+        {items.length}
+      </span>
+    )}
+  </Link>
+
+  <Link
+    href="/completed"
+    className="nav-tab"
+  >
+    Completed
+  </Link>
+</nav>
 
           <div className="sync-status">
             <span
               className={`sync-dot ${
-                connected ? "online" : ""
+                connected
+                  ? "online"
+                  : ""
               }`}
             />
 
-            {connected ? "Synced" : "Offline"}
+            {connected
+              ? "Synced"
+              : "Offline"}
           </div>
         </div>
       </header>
@@ -289,6 +427,7 @@ export default function WipPage() {
                     strokeWidth="1.7"
                     strokeLinecap="round"
                   />
+
                   <path
                     d="M9 12h6M9 16h4"
                     stroke="currentColor"
@@ -299,9 +438,13 @@ export default function WipPage() {
               </div>
 
               <div>
-                <h1>Work in Progress</h1>
+                <h1>
+                  Work in Progress
+                </h1>
+
                 <p>
-                  Items waiting for processing.
+                  Items waiting for
+                  processing.
                 </p>
               </div>
             </div>
@@ -309,7 +452,10 @@ export default function WipPage() {
 
           <div className="wip-total-card">
             <span>Waiting</span>
-            <strong>{items.length}</strong>
+
+            <strong>
+              {items.length}
+            </strong>
           </div>
         </section>
 
@@ -320,7 +466,9 @@ export default function WipPage() {
                 type="checkbox"
                 checked={allSelected}
                 onChange={toggleAll}
-                disabled={items.length === 0}
+                disabled={
+                  items.length === 0
+                }
               />
 
               <span>
@@ -331,15 +479,49 @@ export default function WipPage() {
             </label>
 
             {selected.size > 0 && (
-              <button
-                className="remove-selected"
-                onClick={removeSelected}
-                disabled={removing}
+              <div
+                style={{
+                  display: "flex",
+                  gap: "10px",
+                  alignItems: "center",
+                  marginLeft: "auto",
+                }}
               >
-                {removing
-                  ? "Removing..."
-                  : `Remove ${selected.size}`}
-              </button>
+                <button
+                  className="remove-selected"
+                  onClick={
+                    signOutSelected
+                  }
+                  disabled={
+                    queueing ||
+                    removing
+                  }
+                  style={{
+                    background:
+                      "#2563eb",
+                    color: "#fff",
+                  }}
+                >
+                  {queueing
+                    ? "Queueing..."
+                    : `Sign Out ${selected.size}`}
+                </button>
+
+                <button
+                  className="remove-selected"
+                  onClick={
+                    removeSelected
+                  }
+                  disabled={
+                    removing ||
+                    queueing
+                  }
+                >
+                  {removing
+                    ? "Removing..."
+                    : `Remove ${selected.size}`}
+                </button>
+              </div>
             )}
           </div>
 
@@ -351,29 +533,39 @@ export default function WipPage() {
                 <span />
               </div>
 
-              <h2>Loading WIP</h2>
+              <h2>
+                Loading WIP
+              </h2>
             </div>
           )}
 
-          {!loading && items.length === 0 && (
-            <div className="wip-empty">
-              <div className="empty-shape">
-                <span />
-                <span />
-                <span />
+          {!loading &&
+            items.length === 0 && (
+              <div className="wip-empty">
+                <div className="empty-shape">
+                  <span />
+                  <span />
+                  <span />
+                </div>
+
+                <h2>
+                  Nothing waiting
+                </h2>
+
+                <p>
+                  IDs you send from
+                  Collect will appear
+                  here.
+                </p>
+
+                <Link
+                  href="/"
+                  className="empty-action"
+                >
+                  Collect IDs
+                </Link>
               </div>
-
-              <h2>Nothing waiting</h2>
-
-              <p>
-                IDs you send from Collect will appear here.
-              </p>
-
-              <Link href="/" className="empty-action">
-                Collect IDs
-              </Link>
-            </div>
-          )}
+            )}
 
           {groups.map((group) => (
             <section
@@ -382,115 +574,160 @@ export default function WipPage() {
             >
               <div className="group-heading">
                 <h2>
-                  {getDateLabel(group.timestamp)}
+                  {getDateLabel(
+                    group.timestamp
+                  )}
                 </h2>
 
                 <span>
-                  {group.items.length}
+                  {
+                    group.items
+                      .length
+                  }
                 </span>
               </div>
 
               <div className="wip-list">
-                {group.items.map((item) => (
-                  <div
-                    className={`wip-row ${
-                      selected.has(item.internalId)
-                        ? "selected"
-                        : ""
-                    }`}
-                    key={item.internalId}
-                  >
-                    <label className="custom-check">
-                      <input
-                        type="checkbox"
-                        checked={selected.has(
+                {group.items.map(
+                  (item) => (
+                    <div
+                      className={`wip-row ${
+                        selected.has(
                           item.internalId
-                        )}
-                        onChange={() =>
-                          toggleItem(item.internalId)
-                        }
-                      />
-
-                      <span />
-                    </label>
-
-                    <div className="wip-item-symbol">
-                      <span />
-                    </div>
-
-                    {editingId === item.internalId ? (
-                      <div className="wip-edit">
+                        )
+                          ? "selected"
+                          : ""
+                      }`}
+                      key={
+                        item.internalId
+                      }
+                    >
+                      <label className="custom-check">
                         <input
-                          value={editingValue}
-                          onChange={(event) =>
-                            setEditingValue(
-                              event.target.value
+                          type="checkbox"
+                          checked={selected.has(
+                            item.internalId
+                          )}
+                          onChange={() =>
+                            toggleItem(
+                              item.internalId
                             )
                           }
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter") {
-                              saveEdit();
-                            }
-
-                            if (event.key === "Escape") {
-                              cancelEdit();
-                            }
-                          }}
-                          autoFocus
                         />
 
-                        <button
-                          className="edit-save"
-                          onClick={saveEdit}
-                        >
-                          Save
-                        </button>
+                        <span />
+                      </label>
 
-                        <button
-                          className="quiet-button"
-                          onClick={cancelEdit}
-                        >
-                          Cancel
-                        </button>
+                      <div className="wip-item-symbol">
+                        <span />
                       </div>
-                    ) : (
-                      <>
-                        <div className="wip-item-main">
-                          <strong>{item.internalId}</strong>
 
-                          <span>
-                            Added {formatTime(item.createdAt)}
-                          </span>
-                        </div>
-
-                        <div className="wip-state">
-                          <span />
-                          Waiting
-                        </div>
-
-                        <div className="row-actions">
-                          <button
-                            className="circle-action"
-                            onClick={() => beginEdit(item)}
-                            aria-label={`Edit ${item.internalId}`}
-                          >
-                            ✎
-                          </button>
-
-                          <button
-                            className="circle-action delete"
-                            onClick={() =>
-                              removeOne(item.internalId)
+                      {editingId ===
+                      item.internalId ? (
+                        <div className="wip-edit">
+                          <input
+                            value={
+                              editingValue
                             }
-                            aria-label={`Remove ${item.internalId}`}
+                            onChange={(
+                              event
+                            ) =>
+                              setEditingValue(
+                                event
+                                  .target
+                                  .value
+                              )
+                            }
+                            onKeyDown={(
+                              event
+                            ) => {
+                              if (
+                                event.key ===
+                                "Enter"
+                              ) {
+                                saveEdit();
+                              }
+
+                              if (
+                                event.key ===
+                                "Escape"
+                              ) {
+                                cancelEdit();
+                              }
+                            }}
+                            autoFocus
+                          />
+
+                          <button
+                            className="edit-save"
+                            onClick={
+                              saveEdit
+                            }
                           >
-                            ×
+                            Save
+                          </button>
+
+                          <button
+                            className="quiet-button"
+                            onClick={
+                              cancelEdit
+                            }
+                          >
+                            Cancel
                           </button>
                         </div>
-                      </>
-                    )}
-                  </div>
-                ))}
+                      ) : (
+                        <>
+                          <div className="wip-item-main">
+                            <strong>
+                              {
+                                item.internalId
+                              }
+                            </strong>
+
+                            <span>
+                              Added{" "}
+                              {formatTime(
+                                item.createdAt
+                              )}
+                            </span>
+                          </div>
+
+                          <div className="wip-state">
+                            <span />
+                            Waiting
+                          </div>
+
+                          <div className="row-actions">
+                            <button
+                              className="circle-action"
+                              onClick={() =>
+                                beginEdit(
+                                  item
+                                )
+                              }
+                              aria-label={`Edit ${item.internalId}`}
+                            >
+                              ✎
+                            </button>
+
+                            <button
+                              className="circle-action delete"
+                              onClick={() =>
+                                removeOne(
+                                  item.internalId
+                                )
+                              }
+                              aria-label={`Remove ${item.internalId}`}
+                            >
+                              ×
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )
+                )}
               </div>
             </section>
           ))}
@@ -498,11 +735,17 @@ export default function WipPage() {
           {message && (
             <div
               className={`toast-message ${
-                messageType === "error" ? "error" : ""
+                messageType ===
+                "error"
+                  ? "error"
+                  : ""
               }`}
             >
               <span className="toast-icon">
-                {messageType === "error" ? "!" : "✓"}
+                {messageType ===
+                "error"
+                  ? "!"
+                  : "✓"}
               </span>
 
               {message}

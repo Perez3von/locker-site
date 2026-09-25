@@ -1,0 +1,12 @@
+{
+  "id": "50c8b37a-6d86-44c0-b398-6d62e25a9116",
+  "packageId": "2037202",
+  "signatureField": "RETAG",
+  "canvasSignature": "IST",
+  "status": "failed",
+  "submit": false,
+  "createdAt": "2026-09-25T05:19:40.429Z",
+  "startedAt": "2026-09-25T05:19:40.749Z",
+  "error": "locator.waitFor: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('td[role=\"gridcell\"][data-col-index=\"0\"]').filter({ hasText: /^\\s*2037202\\s*$/ }).first() to be visible\u001b[22m\n",
+  "completedAt": "2026-09-25T05:20:31.283Z"
+}

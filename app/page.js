@@ -412,6 +412,13 @@ export default function Home() {
                 </span>
               )}
             </Link>
+
+            <Link
+  href="/completed"
+  className="nav-tab"
+>
+  Completed
+</Link>
           </nav>
 
           <div className="sync-status">

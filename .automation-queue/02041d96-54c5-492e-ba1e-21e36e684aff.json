@@ -1,0 +1,24 @@
+{
+  "id": "02041d96-54c5-492e-ba1e-21e36e684aff",
+  "packageId": "2037202",
+  "signatureField": "RETAG",
+  "canvasSignature": "IST",
+  "status": "completed",
+  "submit": false,
+  "createdAt": "2026-09-25T05:34:48.785Z",
+  "startedAt": "2026-09-25T05:34:49.407Z",
+  "result": {
+    "status": "completed",
+    "packageId": "2037202",
+    "recordId": "99cc316e-a4b6-f111-8b0c-005056b82b09",
+    "trackingNumber": "09222026124039SJONES10297-0",
+    "submitted": true,
+    "verified": true,
+    "signatureName": "RETAG",
+    "signatureDate": "2026-09-25T05:35:16.3109352",
+    "signatureTypeId": "cc80d08f-1aeb-41a7-b9af-a9eb328836a1",
+    "beforeSaveScreenshot": ".automation-queue/02041d96-54c5-492e-ba1e-21e36e684aff-before-save.png",
+    "afterSaveScreenshot": ".automation-queue/02041d96-54c5-492e-ba1e-21e36e684aff-after-save.png"
+  },
+  "completedAt": "2026-09-25T05:35:36.210Z"
+}

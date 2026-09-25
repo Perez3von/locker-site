@@ -1,0 +1,23 @@
+{
+  "id": "a273972a-0953-4960-9b21-95984deadd6c",
+  "packageId": "2037202",
+  "signatureField": "RETAG",
+  "canvasSignature": "IST",
+  "status": "completed",
+  "submit": false,
+  "createdAt": "2026-09-25T05:00:05.712Z",
+  "startedAt": "2026-09-25T05:00:06.037Z",
+  "result": {
+    "status": "completed",
+    "packageId": "2037202",
+    "recordId": "99cc316e-a4b6-f111-8b0c-005056b82b09",
+    "submitted": false,
+    "apiAuthenticated": true,
+    "packageFound": true,
+    "browserJwtPresent": true,
+    "browserSiteId": "1086",
+    "browserUrl": "https://istmspt.com/packagetrack",
+    "screenshot": ".automation-queue/a273972a-0953-4960-9b21-95984deadd6c-mspt.png"
+  },
+  "completedAt": "2026-09-25T05:00:12.717Z"
+}

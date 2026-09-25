@@ -1,0 +1,12 @@
+{
+  "id": "a08d55ec-8ce3-4d7c-8b58-e15c39e9d24c",
+  "packageId": "2037202",
+  "signatureField": "RETAG",
+  "canvasSignature": "IST",
+  "status": "failed",
+  "submit": false,
+  "createdAt": "2026-09-25T05:11:08.309Z",
+  "startedAt": "2026-09-25T05:11:08.611Z",
+  "error": "locator.waitFor: Timeout 30000ms exceeded.\nCall log:\n\u001b[2m  - waiting for locator('tr.k-master-row').filter({ has: locator('td').filter({ hasText: /^\\s*2037202\\s*$/ }) }).first() to be visible\u001b[22m\n",
+  "completedAt": "2026-09-25T05:11:59.960Z"
+}

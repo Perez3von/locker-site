@@ -1,0 +1,20 @@
+{
+  "id": "c80129e8-d5bc-40b1-b1cf-02f65524ace0",
+  "packageId": "2037202",
+  "signatureField": "RETAG",
+  "canvasSignature": "IST",
+  "status": "completed",
+  "submit": false,
+  "createdAt": "2026-09-25T04:48:53.552Z",
+  "startedAt": "2026-09-25T04:48:53.584Z",
+  "result": {
+    "status": "completed",
+    "packageId": "2037202",
+    "recordId": "99cc316e-a4b6-f111-8b0c-005056b82b09",
+    "submitted": false,
+    "apiAuthenticated": true,
+    "packageFound": true,
+    "message": "MSPT authenticated and package found. Browser opened istmspt.com/packagetrack. No package changes submitted."
+  },
+  "completedAt": "2026-09-25T04:49:01.414Z"
+}

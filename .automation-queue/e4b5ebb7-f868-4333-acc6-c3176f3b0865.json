@@ -1,0 +1,12 @@
+{
+  "id": "e4b5ebb7-f868-4333-acc6-c3176f3b0865",
+  "packageId": "2037202",
+  "signatureField": "RETAG",
+  "canvasSignature": "IST",
+  "status": "failed",
+  "submit": false,
+  "createdAt": "2026-09-25T04:47:50.058Z",
+  "startedAt": "2026-09-25T04:47:50.827Z",
+  "error": "Unexpected token 'e', \"eyJhbGciOi\"... is not valid JSON",
+  "completedAt": "2026-09-25T04:47:52.166Z"
+}

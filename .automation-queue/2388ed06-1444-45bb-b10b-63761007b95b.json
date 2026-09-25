@@ -1,0 +1,12 @@
+{
+  "id": "2388ed06-1444-45bb-b10b-63761007b95b",
+  "packageId": "2037202",
+  "signatureField": "RETAG",
+  "canvasSignature": "IST",
+  "status": "failed",
+  "submit": false,
+  "createdAt": "2026-09-25T05:24:46.234Z",
+  "startedAt": "2026-09-25T05:24:46.254Z",
+  "error": "locator.waitFor: Timeout 15000ms exceeded.\nCall log:\n\u001b[2m  - waiting for getByRole('button', { name: 'Done', exact: true }) to be visible\u001b[22m\n",
+  "completedAt": "2026-09-25T05:25:27.436Z"
+}
