@@ -3,16 +3,147 @@
 import Link from "next/link";
 
 import {
+  useCallback,
   useEffect,
   useMemo,
   useState,
 } from "react";
 
 import {
-  subscribeToCompleted,
+  getCompletedPage,
+  getCompletedSince,
 } from "../../lib/firebase";
 
-function formatTime(timestamp) {
+const COMPLETED_CACHE_KEY =
+  "locker-completed-cache-v1";
+
+function normalizeCachedItems(
+  value
+) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter(
+      (item) =>
+        item &&
+        item.internalId &&
+        item.completedAt
+    )
+    .sort(
+      (a, b) =>
+        b.completedAt -
+        a.completedAt
+    );
+}
+
+function readCompletedCache() {
+  try {
+    const raw =
+      localStorage.getItem(
+        COMPLETED_CACHE_KEY
+      );
+
+    if (!raw) {
+      return {
+        items: [],
+        hasMore: true,
+      };
+    }
+
+    const parsed =
+      JSON.parse(raw);
+
+    return {
+      items:
+        normalizeCachedItems(
+          parsed.items
+        ),
+
+      hasMore:
+        parsed.hasMore !==
+        false,
+    };
+  } catch (
+    error
+  ) {
+    console.error(
+      "Completed cache read failed:",
+      error
+    );
+
+    return {
+      items: [],
+      hasMore: true,
+    };
+  }
+}
+
+function writeCompletedCache(
+  items,
+  hasMore
+) {
+  try {
+    localStorage.setItem(
+      COMPLETED_CACHE_KEY,
+
+      JSON.stringify({
+        savedAt:
+          Date.now(),
+
+        items,
+
+        hasMore,
+      })
+    );
+  } catch (
+    error
+  ) {
+    console.error(
+      "Completed cache save failed:",
+      error
+    );
+  }
+}
+
+function mergeCompletedItems(
+  current,
+  incoming
+) {
+  const map =
+    new Map();
+
+  current.forEach(
+    (item) => {
+      map.set(
+        item.internalId,
+        item
+      );
+    }
+  );
+
+  incoming.forEach(
+    (item) => {
+      map.set(
+        item.internalId,
+        item
+      );
+    }
+  );
+
+  return [
+    ...map.values(),
+  ].sort(
+    (a, b) =>
+      (b.completedAt || 0) -
+      (a.completedAt || 0)
+  );
+}
+
+function formatTime(
+  timestamp
+) {
   if (!timestamp) {
     return "";
   }
@@ -28,14 +159,18 @@ function formatTime(timestamp) {
   );
 }
 
-function getDateKey(timestamp) {
+function getDateKey(
+  timestamp
+) {
   const date =
     new Date(timestamp);
 
   return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
 }
 
-function getDateLabel(timestamp) {
+function getDateLabel(
+  timestamp
+) {
   const target =
     new Date(timestamp);
 
@@ -58,15 +193,20 @@ function getDateLabel(timestamp) {
 
   const difference =
     Math.round(
-      (todayDay - targetDay) /
+      (todayDay -
+        targetDay) /
         86400000
     );
 
-  if (difference === 0) {
+  if (
+    difference === 0
+  ) {
     return "Today";
   }
 
-  if (difference === 1) {
+  if (
+    difference === 1
+  ) {
     return "Yesterday";
   }
 
@@ -85,7 +225,9 @@ function getDateLabel(timestamp) {
   );
 }
 
-function getCompletionLabel(type) {
+function getCompletionLabel(
+  type
+) {
   if (
     type ===
     "already_signed_out"
@@ -100,32 +242,386 @@ export default function CompletedPage() {
   const [items, setItems] =
     useState([]);
 
-  const [connected, setConnected] =
-    useState(false);
-
   const [loading, setLoading] =
     useState(true);
 
+  const [
+    loadingMore,
+    setLoadingMore,
+  ] = useState(false);
+
+  const [
+    refreshing,
+    setRefreshing,
+  ] = useState(false);
+
+  const [hasMore, setHasMore] =
+    useState(true);
+
+  const [
+    lastDocument,
+    setLastDocument,
+  ] = useState(null);
+
+  const [
+    initialized,
+    setInitialized,
+  ] = useState(false);
+
+  const [error, setError] =
+    useState("");
+
+  const saveCache =
+    useCallback(
+      (
+        nextItems,
+        nextHasMore
+      ) => {
+        writeCompletedCache(
+          nextItems,
+          nextHasMore
+        );
+      },
+      []
+    );
+
+  /* =======================================================
+     INITIAL LOAD
+
+     1. Show local cache immediately.
+     2. If no cache exists, fetch newest 50.
+     3. If cache exists, only check for newer completions.
+  ======================================================= */
+
   useEffect(() => {
-    const unsubscribe =
-      subscribeToCompleted(
-        (completedItems) => {
-          setItems(
-            completedItems
+    let cancelled =
+      false;
+
+    async function initialize() {
+      const cache =
+        readCompletedCache();
+
+      if (
+        cache.items.length >
+        0
+      ) {
+        setItems(
+          cache.items
+        );
+
+        setHasMore(
+          cache.hasMore
+        );
+
+        setLoading(false);
+
+        setRefreshing(
+          true
+        );
+
+        try {
+          const newest =
+            cache.items[0];
+
+          const newerItems =
+            await getCompletedSince(
+              newest.completedAt
+            );
+
+          if (cancelled) {
+            return;
+          }
+
+          const merged =
+            mergeCompletedItems(
+              cache.items,
+              newerItems
+            );
+
+          setItems(merged);
+
+          saveCache(
+            merged,
+            cache.hasMore
+          );
+        } catch (
+          error
+        ) {
+          console.error(
+            "Could not check for new completed items:",
+            error
           );
 
-          setConnected(true);
-          setLoading(false);
-        },
+          if (!cancelled) {
+            setError(
+              "Could not refresh Completed. Showing saved history."
+            );
+          }
+        } finally {
+          if (!cancelled) {
+            setRefreshing(
+              false
+            );
 
-        () => {
-          setConnected(false);
-          setLoading(false);
+            setInitialized(
+              true
+            );
+          }
         }
+
+        return;
+      }
+
+      try {
+        const result =
+          await getCompletedPage();
+
+        if (cancelled) {
+          return;
+        }
+
+        setItems(
+          result.items
+        );
+
+        setLastDocument(
+          result.lastDocument
+        );
+
+        setHasMore(
+          result.hasMore
+        );
+
+        saveCache(
+          result.items,
+          result.hasMore
+        );
+      } catch (
+        error
+      ) {
+        console.error(
+          "Completed load failed:",
+          error
+        );
+
+        if (!cancelled) {
+          setError(
+            error?.message ||
+              "Could not load Completed."
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(
+            false
+          );
+
+          setInitialized(
+            true
+          );
+        }
+      }
+    }
+
+    initialize();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [saveCache]);
+
+  /* =======================================================
+     PAGINATION CURSOR FOR CACHED DATA
+
+     Firestore's startAfter cursor is a DocumentSnapshot.
+     That cannot be stored in localStorage.
+
+     If we restored cached history, we obtain the cursor
+     only when the user actually asks for more history.
+
+     We do that by reading pages until we reach the oldest
+     cached ID. This happens only when "Load More" is used,
+     not every time Completed opens.
+  ======================================================= */
+
+  async function findCursorForCache() {
+    if (
+      items.length === 0
+    ) {
+      return null;
+    }
+
+    const oldestCached =
+      items[
+        items.length - 1
+      ].internalId;
+
+    let cursor = null;
+
+    let safety = 0;
+
+    while (
+      safety < 1000
+    ) {
+      const result =
+        await getCompletedPage(
+          cursor
+        );
+
+      if (
+        result.items.length ===
+        0
+      ) {
+        return {
+          cursor:
+            result.lastDocument,
+
+          hasMore: false,
+        };
+      }
+
+      const foundIndex =
+        result.items.findIndex(
+          (item) =>
+            item.internalId ===
+            oldestCached
+        );
+
+      if (
+        foundIndex !== -1
+      ) {
+        return {
+          cursor:
+            result.lastDocument,
+
+          hasMore:
+            result.hasMore,
+        };
+      }
+
+      if (
+        !result.hasMore
+      ) {
+        return {
+          cursor:
+            result.lastDocument,
+
+          hasMore: false,
+        };
+      }
+
+      cursor =
+        result.lastDocument;
+
+      safety++;
+    }
+
+    throw new Error(
+      "Could not locate Completed pagination position."
+    );
+  }
+
+  /* =======================================================
+     LOAD MORE
+  ======================================================= */
+
+  async function handleLoadMore() {
+    if (
+      loadingMore ||
+      !hasMore
+    ) {
+      return;
+    }
+
+    setLoadingMore(true);
+    setError("");
+
+    try {
+      let cursor =
+        lastDocument;
+
+      let canLoadMore =
+        hasMore;
+
+      if (!cursor) {
+        const position =
+          await findCursorForCache();
+
+        cursor =
+          position?.cursor ||
+          null;
+
+        canLoadMore =
+          position?.hasMore ??
+          false;
+
+        setLastDocument(
+          cursor
+        );
+
+        if (
+          !canLoadMore
+        ) {
+          setHasMore(
+            false
+          );
+
+          saveCache(
+            items,
+            false
+          );
+
+          return;
+        }
+      }
+
+      const result =
+        await getCompletedPage(
+          cursor
+        );
+
+      const merged =
+        mergeCompletedItems(
+          items,
+          result.items
+        );
+
+      setItems(merged);
+
+      setLastDocument(
+        result.lastDocument
       );
 
-    return unsubscribe;
-  }, []);
+      setHasMore(
+        result.hasMore
+      );
+
+      saveCache(
+        merged,
+        result.hasMore
+      );
+    } catch (
+      error
+    ) {
+      console.error(
+        "Could not load more completed items:",
+        error
+      );
+
+      setError(
+        error?.message ||
+          "Could not load more completed items."
+      );
+    } finally {
+      setLoadingMore(
+        false
+      );
+    }
+  }
+
+  /* =======================================================
+     GROUPING
+  ======================================================= */
 
   const groups =
     useMemo(() => {
@@ -136,14 +632,20 @@ export default function CompletedPage() {
           const timestamp =
             item.completedAt ||
             item.updatedAt ||
-            Date.now();
+            item.createdAt;
+
+          if (!timestamp) {
+            return;
+          }
 
           const key =
             getDateKey(
               timestamp
             );
 
-          if (!grouped[key]) {
+          if (
+            !grouped[key]
+          ) {
             grouped[key] = {
               key,
               timestamp,
@@ -153,7 +655,9 @@ export default function CompletedPage() {
 
           grouped[
             key
-          ].items.push(item);
+          ].items.push(
+            item
+          );
         }
       );
 
@@ -197,27 +701,23 @@ export default function CompletedPage() {
               className="nav-tab active"
             >
               Completed
-
-              {items.length > 0 && (
-                <span className="nav-count">
-                  {items.length}
-                </span>
-              )}
             </Link>
           </nav>
 
           <div className="sync-status">
             <span
               className={`sync-dot ${
-                connected
-                  ? "online"
-                  : ""
+                error
+                  ? ""
+                  : "online"
               }`}
             />
 
-            {connected
-              ? "Synced"
-              : "Offline"}
+            {refreshing
+              ? "Checking..."
+              : error
+                ? "Cached"
+                : "Synced"}
           </div>
         </div>
       </header>
@@ -245,7 +745,7 @@ export default function CompletedPage() {
 
           <div className="wip-total-card">
             <span>
-              Completed
+              Loaded
             </span>
 
             <strong>
@@ -270,7 +770,8 @@ export default function CompletedPage() {
           )}
 
           {!loading &&
-            items.length === 0 && (
+            items.length ===
+              0 && (
               <div className="wip-empty">
                 <div className="empty-shape">
                   <span />
@@ -301,7 +802,9 @@ export default function CompletedPage() {
             (group) => (
               <section
                 className="wip-group"
-                key={group.key}
+                key={
+                  group.key
+                }
               >
                 <div className="group-heading">
                   <h2>
@@ -360,6 +863,64 @@ export default function CompletedPage() {
               </section>
             )
           )}
+
+          {!loading &&
+            items.length >
+              0 && (
+              <div
+                style={{
+                  display:
+                    "flex",
+
+                  justifyContent:
+                    "center",
+
+                  padding:
+                    "28px 0 12px",
+                }}
+              >
+                {hasMore ? (
+                  <button
+                    className="empty-action"
+                    onClick={
+                      handleLoadMore
+                    }
+                    disabled={
+                      loadingMore
+                    }
+                  >
+                    {loadingMore
+                      ? "Loading..."
+                      : "Load More"}
+                  </button>
+                ) : (
+                  <span
+                    style={{
+                      color:
+                        "#8b8b92",
+
+                      fontSize:
+                        "14px",
+                    }}
+                  >
+                    All completed
+                    items loaded
+                  </span>
+                )}
+              </div>
+            )}
+
+          {error &&
+            items.length >
+              0 && (
+              <div className="toast-message error">
+                <span className="toast-icon">
+                  !
+                </span>
+
+                {error}
+              </div>
+            )}
         </section>
       </div>
     </main>
