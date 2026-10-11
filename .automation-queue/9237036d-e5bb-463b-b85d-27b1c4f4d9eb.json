@@ -1,0 +1,11 @@
+{
+  "id": "9237036d-e5bb-463b-b85d-27b1c4f4d9eb",
+  "packageId": "2047470",
+  "signatureField": "RETAG",
+  "canvasSignature": "IST",
+  "status": "failed",
+  "createdAt": "2026-10-01T03:56:30.739Z",
+  "startedAt": "2026-10-01T03:56:40.279Z",
+  "error": "Save was clicked ONCE, but MSPT API did not confirm RETAG + signatureDate. Save was NOT retried.",
+  "completedAt": "2026-10-01T03:57:32.993Z"
+}

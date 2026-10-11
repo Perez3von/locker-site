@@ -1,0 +1,22 @@
+{
+  "id": "ee06ef52-203b-49bc-8f66-eaf2ef6eb997",
+  "packageId": "2044807",
+  "signatureField": "RETAG",
+  "canvasSignature": "IST",
+  "status": "completed",
+  "createdAt": "2026-10-01T03:56:30.734Z",
+  "startedAt": "2026-10-01T03:56:31.542Z",
+  "result": {
+    "status": "skipped",
+    "reason": "already_signed_out",
+    "packageId": "2044807",
+    "recordId": "339ca91f-73bb-f111-8b0c-005056b82b09",
+    "completionType": "already_signed_out",
+    "firestore": {
+      "completed": true,
+      "alreadyCompleted": false,
+      "alreadyMissing": false
+    }
+  },
+  "completedAt": "2026-10-01T03:56:39.254Z"
+}
