@@ -4,9 +4,13 @@ const path = require("path");
 const {
   processISTPackage,
 } = require("./istAutomation");
+const { processBatchJob } = require("./batchJob");
+const { removeSuccessfulJob } = require("./queueHousekeeping");
 
 const {
   completeWipItem,
+  setAutomationStatus,
+  setAutomationStage,
 } = require("./firebaseAdmin");
 
 const QUEUE_DIR = path.join(
@@ -90,15 +94,35 @@ async function saveJob(job) {
 }
 
 async function processJob(job) {
+  if (job.method === "batch") {
+    await processBatchJob(job);
+    return;
+  }
   job.status = "processing";
   job.startedAt =
     new Date().toISOString();
 
   await saveJob(job);
+  const claimed = await setAutomationStatus(job.packageId, job.id, "processing");
+  if (!claimed) {
+    job.status = "skipped";
+    job.reason = "claim_no_longer_valid";
+    await saveJob(job);
+    return;
+  }
 
   try {
-    const result =
-      await processISTPackage(job);
+    const result = await processISTPackage(job, {
+      onStage: stage => setAutomationStage(job.packageId, job.id, stage),
+      onBeforeSave: async () => {
+        // Persist to the queue file before the UI is allowed to click Save.
+        // This stays true even if post-Save API verification fails.
+        job.saveAttempted = true;
+        job.saveAttemptedAt = new Date().toISOString();
+        await saveJob(job);
+        await setAutomationStage(job.packageId, job.id, "Save requested — verifying result");
+      },
+    });
 
     // ===============================================
     // ALREADY SIGNED OUT
@@ -136,6 +160,7 @@ async function processJob(job) {
         new Date().toISOString();
 
       await saveJob(job);
+      await removeSuccessfulJob(job);
 
       console.log(
         `JOB ${job.id}: COMPLETED - ALREADY SIGNED OUT`
@@ -149,6 +174,7 @@ async function processJob(job) {
     // ===============================================
 
     if (result.status === "skipped") {
+      await setAutomationStatus(job.packageId, job.id, "review", `Unverified skip: ${result.reason}`);
       job.status = "skipped";
       job.reason = result.reason;
       job.result = result;
@@ -206,16 +232,23 @@ async function processJob(job) {
       new Date().toISOString();
 
     await saveJob(job);
+    await removeSuccessfulJob(job);
 
     console.log(
       `JOB ${job.id}: COMPLETED`
     );
   } catch (error) {
-    job.status = "failed";
-
-    job.error =
-      error?.message ||
-      "Unknown worker error";
+    // A failure before Save is safe to retry after the cause is fixed.
+    // Once Save was attempted, do not permit blind retries.
+    const needsReview = job.saveAttempted === true;
+    job.status = needsReview ? "review" : "failed";
+    job.error = error?.message || "Unknown worker error";
+    await setAutomationStatus(
+      job.packageId,
+      job.id,
+      needsReview ? "review" : "failed",
+      job.error
+    );
 
     job.completedAt =
       new Date().toISOString();
@@ -223,7 +256,7 @@ async function processJob(job) {
     await saveJob(job);
 
     console.error(
-      `JOB ${job.id}: FAILED`
+      `JOB ${job.id}: ${needsReview ? "NEEDS REVIEW (Save may have been attempted)" : "FAILED BEFORE SAVE — safe to retry after fixing the cause"}`
     );
 
     console.error(error);

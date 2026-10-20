@@ -40,3 +40,8 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 serviceAccountKey.json
+# Firebase credentials
+/serviceAccountKey.json
+
+# Automation jobs and screenshots
+/.automation-queue/

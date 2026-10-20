@@ -1,0 +1,68 @@
+/* Collect controls remain accessible while scrolling the current list. */
+.quickBar {
+  position: sticky;
+  top: 82px;
+  z-index: 18;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin: -12px -12px 23px;
+  padding: 13px 14px;
+  border: 1px solid #dfe8f6;
+  border-radius: 16px;
+  background: rgba(246, 250, 255, .97);
+  box-shadow: 0 5px 20px rgba(23, 65, 115, .065);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+}
+.cameraCopy { display: flex; flex-direction: column; min-width: 0; gap: 4px; }
+.cameraCopy strong { font-size: 14px; font-weight: 700; color: #273a56; }
+.cameraCopy span { font-size: 12px; color: #69798c; line-height: 1.3; }
+.cameraButton {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-height: 46px;
+  padding: 0 18px;
+  border-radius: 12px;
+  background: #176bd1;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 700;
+  touch-action: manipulation;
+}
+.cameraButton:hover { background: #105fbf; }
+.cameraButton:focus-visible { outline: 3px solid #86b6fb; outline-offset: 2px; }
+.cameraButton svg { width: 20px; height: 20px; }
+.nameField { display: flex; flex-direction: column; gap: 8px; margin-top: 22px; color: #2d3b4d; font-size: 13px; font-weight: 700; }
+.fieldNote { color: #7b8795; font-weight: 450; font-size: 12px; }
+.nameField input {
+  width: 100%;
+  min-width: 0;
+  height: 51px;
+  padding: 0 15px;
+  outline: none;
+  border: 1px solid #cfd9e7;
+  border-radius: 12px;
+  background: #fff;
+  color: #1b2b40;
+  font-size: 16px;
+  font-weight: 500;
+}
+.nameField input:focus { border-color: #176bd1; box-shadow: 0 0 0 3px rgba(23, 107, 209, .12); }
+.nameField input[aria-invalid="true"] { border-color: #d24f4f; }
+@media (max-width: 700px) {
+  .quickBar { top: 78px; margin: -6px -6px 20px; gap: 9px; padding: 10px; border-radius: 13px; }
+  .cameraCopy { gap: 3px; }
+  .cameraCopy strong { font-size: 13px; }
+  .cameraCopy span { font-size: 11px; }
+  .cameraButton { min-height: 48px; padding: 0 13px; font-size: 13px; }
+  .nameField { margin-top: 18px; }
+}
+@media (max-width: 380px) {
+  .cameraCopy span { display: none; }
+  .cameraButton { padding: 0 11px; }
+}

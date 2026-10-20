@@ -6,85 +6,13 @@ const MSPT_URL = "https://istmspt.com/packagetrack";
 function isAlreadySignedOut(pkg) {
   return Boolean(
     pkg.signatureDate ||
-      pkg.signatureName ||
-      pkg.signatureTypeId ||
-      pkg.signature
+    pkg.signatureName ||
+    pkg.signatureTypeId ||
+    pkg.signature
   );
 }
 
-async function drawIST(page) {
-  const canvas = page.locator(".signatureBox canvas");
-
-  await canvas.waitFor({
-    state: "visible",
-    timeout: 15000,
-  });
-
-  const box = await canvas.boundingBox();
-
-  if (!box) {
-    throw new Error("Signature canvas has no bounding box.");
-  }
-
-  const x = box.x;
-  const y = box.y;
-  const w = box.width;
-  const h = box.height;
-
-  async function stroke(points) {
-    const first = points[0];
-
-    await page.mouse.move(
-      x + w * first[0],
-      y + h * first[1]
-    );
-
-    await page.mouse.down();
-
-    for (let i = 1; i < points.length; i++) {
-      await page.mouse.move(
-        x + w * points[i][0],
-        y + h * points[i][1],
-        { steps: 4 }
-      );
-    }
-
-    await page.mouse.up();
-  }
-
-  // I
-  await stroke([
-    [0.20, 0.30],
-    [0.20, 0.70],
-  ]);
-
-  // S
-  await stroke([
-    [0.45, 0.32],
-    [0.40, 0.28],
-    [0.34, 0.30],
-    [0.30, 0.36],
-    [0.31, 0.42],
-    [0.36, 0.47],
-    [0.42, 0.50],
-    [0.46, 0.55],
-    [0.46, 0.61],
-    [0.43, 0.67],
-    [0.37, 0.71],
-    [0.31, 0.68],
-  ]);
-
-  // T
-  await stroke([
-    [0.56, 0.30],
-    [0.76, 0.30],
-  ]);
-
-  await stroke([
-    [0.66, 0.30],
-    [0.66, 0.70],
-  ]);
-}
+const { drawIST } = require("./signatureInk");
 
 async function waitUntilEnabled(locator, timeout = 15000) {
   await locator.waitFor({
@@ -109,7 +37,7 @@ async function waitUntilEnabled(locator, timeout = 15000) {
   );
 }
 
-async function processISTPackage(job) {
+async function processISTPackage(job, { onBeforeSave, onStage } = {}) {
   console.log("");
   console.log("==========================");
   console.log("MSPT REAL SIGNATURE TEST");
@@ -122,6 +50,7 @@ async function processISTPackage(job) {
   // LOGIN + PACKAGE PRECHECK
   // --------------------------------------------------
 
+  if (onStage) await onStage("Signing into MSPT");
   const session = await login();
 
   const pkg = await findPackage(
@@ -159,6 +88,7 @@ async function processISTPackage(job) {
     );
   }
 
+  // For this package we expect one.
   const targetTrackingNumber =
     trackingNumbers[0];
 
@@ -171,6 +101,7 @@ async function processISTPackage(job) {
   // CHROME
   // --------------------------------------------------
 
+  if (onStage) await onStage("Opening Search Package");
   const browser = await chromium.launch({
     channel: "chrome",
     headless: true,
@@ -304,7 +235,7 @@ async function processISTPackage(job) {
     );
 
     // ------------------------------------------------
-    // SEARCH
+    // ACTUAL SEARCH BUTTON
     // ------------------------------------------------
 
     const searchButton =
@@ -323,7 +254,7 @@ async function processISTPackage(job) {
     await searchButton.click();
 
     // ------------------------------------------------
-    // WAIT FOR PACKAGE RESULT
+    // WAIT FOR EXACT RESULT
     // ------------------------------------------------
 
     console.log(
@@ -354,7 +285,7 @@ async function processISTPackage(job) {
     );
 
     // ------------------------------------------------
-    // SELECT PACKAGE
+    // SELECT RESULT
     // ------------------------------------------------
 
     console.log(
@@ -365,6 +296,7 @@ async function processISTPackage(job) {
 
     await page.waitForTimeout(750);
 
+    // Verify Telerik actually selected it.
     const ariaSelected =
       await packageRow.getAttribute(
         "aria-selected"
@@ -376,15 +308,14 @@ async function processISTPackage(job) {
     );
 
     // ------------------------------------------------
-    // WAIT FOR PACKAGE DETAILS
+    // WAIT FOR LOWER PACKAGE FORM
     // ------------------------------------------------
 
-    const selectedInternalId =
-      page.locator(
-        'input[role="spinbutton"][aria-valuenow="' +
-          job.packageId +
-          '"]'
-      );
+    const selectedInternalId = page.locator(
+      'input[role="spinbutton"][aria-valuenow="' +
+        job.packageId +
+        '"]'
+    );
 
     await selectedInternalId.waitFor({
       state: "visible",
@@ -399,22 +330,27 @@ async function processISTPackage(job) {
     // TRACKING NUMBER DROPDOWN
     // ------------------------------------------------
 
-    const trackingDropdownContainer =
-      page
-        .locator(
-          ".k-floating-label-container"
-        )
-        .filter({
-          has: page.locator("label", {
-            hasText: "Tracking Number",
-          }),
-        })
-        .filter({
-          has: page.locator(
-            '[role="combobox"]'
-          ),
-        })
-        .first();
+    //
+    // We specifically want the dropdown in the
+    // selected package detail form, NOT the Tracking
+    // Number text field in the search filters.
+    //
+
+    const trackingDropdownContainer = page
+      .locator(
+        ".k-floating-label-container"
+      )
+      .filter({
+        has: page.locator("label", {
+          hasText: "Tracking Number",
+        }),
+      })
+      .filter({
+        has: page.locator(
+          '[role="combobox"]'
+        ),
+      })
+      .first();
 
     const trackingDropdown =
       trackingDropdownContainer.locator(
@@ -433,7 +369,7 @@ async function processISTPackage(job) {
     await trackingDropdown.click();
 
     // ------------------------------------------------
-    // SELECT CORRECT TRACKING NUMBER
+    // WAIT FOR CORRECT TRACKING NUMBER
     // ------------------------------------------------
 
     console.log(
@@ -466,6 +402,10 @@ async function processISTPackage(job) {
 
     await page.waitForTimeout(750);
 
+    // ------------------------------------------------
+    // VERIFY TRACKING SELECTION
+    // ------------------------------------------------
+
     const selectedTrackingText = (
       await trackingDropdownContainer
         .locator(
@@ -489,20 +429,19 @@ async function processISTPackage(job) {
     }
 
     // ------------------------------------------------
-    // SIGNATURE NAME
+    // SIGNATURE NAME SHOULD NOW BE AVAILABLE
     // ------------------------------------------------
 
-    const signatureNameContainer =
-      page
-        .locator(
-          ".k-floating-label-container"
-        )
-        .filter({
-          has: page.locator("label", {
-            hasText: "Signature Name",
-          }),
-        })
-        .first();
+    const signatureNameContainer = page
+      .locator(
+        ".k-floating-label-container"
+      )
+      .filter({
+        has: page.locator("label", {
+          hasText: "Signature Name",
+        }),
+      })
+      .first();
 
     const signatureNameInput =
       signatureNameContainer.locator(
@@ -517,6 +456,10 @@ async function processISTPackage(job) {
     console.log(
       "Signature Name field available."
     );
+
+    // ------------------------------------------------
+    // RETAG
+    // ------------------------------------------------
 
     await signatureNameInput.fill(
       job.signatureField
@@ -540,20 +483,19 @@ async function processISTPackage(job) {
     );
 
     // ------------------------------------------------
-    // SIGNATURE TYPE = DIGITAL
+    // DIGITAL SIGNATURE TYPE
     // ------------------------------------------------
 
-    const signatureTypeContainer =
-      page
-        .locator(
-          ".k-floating-label-container"
-        )
-        .filter({
-          has: page.locator("label", {
-            hasText: "Signature Type",
-          }),
-        })
-        .first();
+    const signatureTypeContainer = page
+      .locator(
+        ".k-floating-label-container"
+      )
+      .filter({
+        has: page.locator("label", {
+          hasText: "Signature Type",
+        }),
+      })
+      .first();
 
     const signatureTypeValue =
       signatureTypeContainer.locator(
@@ -565,7 +507,7 @@ async function processISTPackage(job) {
     ).trim();
 
     console.log(
-      "Signature Type before selection:",
+      "Signature Type:",
       signatureType
     );
 
@@ -574,10 +516,6 @@ async function processISTPackage(job) {
         signatureTypeContainer.locator(
           '[role="combobox"]'
         );
-
-      console.log(
-        "Selecting Digital signature type..."
-      );
 
       await signatureTypeDropdown.click();
 
@@ -600,27 +538,23 @@ async function processISTPackage(job) {
 
       await digitalOption.click();
 
-      await page.waitForTimeout(750);
+      await page.waitForTimeout(500);
 
       signatureType = (
         await signatureTypeValue.innerText()
       ).trim();
-    }
 
-    // Do not continue unless Digital is positively verified.
-    if (signatureType !== "Digital") {
-      throw new Error(
-        `Signature Type is not Digital. Current value: ${signatureType}`
-      );
+      if (
+        signatureType !== "Digital"
+      ) {
+        throw new Error(
+          `Could not select Digital. Current type: ${signatureType}`
+        );
+      }
     }
-
-    console.log(
-      "Signature Type verified:",
-      signatureType
-    );
 
     // ------------------------------------------------
-    // START SIGNATURE
+    // START
     // ------------------------------------------------
 
     const startButton =
@@ -666,36 +600,34 @@ async function processISTPackage(job) {
 
     console.log("Drawing IST...");
 
+    if (onStage) await onStage("Drawing and checking IST signature");
     await drawIST(page);
 
-    await page.waitForTimeout(750);
+    await page.waitForTimeout(500);
 
     // ------------------------------------------------
-    // VERIFY DRAWN SIGNATURE
+    // SIGNATURE COMPLETED
     // ------------------------------------------------
-    //
-    // Search Package has NO Done button.
-    //
-    // After drawing, the signature is already part of
-    // the form. Clear Signature becoming enabled gives
-    // us a UI-level confirmation that MSPT recognizes
-    // the drawn signature.
-    // ------------------------------------------------
+    // Search Package does not use a Done button.
+    // Once the Digital signature is drawn, MSPT keeps
+    // the signature directly on the form.
 
     console.log(
       "Signature drawn successfully."
     );
 
+    await page.waitForTimeout(750);
+
     const signatureCanvas =
-      page.locator(
-        ".signatureBox canvas"
-      );
+      page.locator(".signatureBox canvas");
 
     await signatureCanvas.waitFor({
       state: "visible",
       timeout: 15000,
     });
 
+    // Clear Signature becomes enabled after MSPT has
+    // accepted a drawn signature.
     const clearSignatureButton =
       page.getByRole("button", {
         name: "Clear Signature",
@@ -715,23 +647,18 @@ async function processISTPackage(job) {
     // PRE-SAVE SCREENSHOT
     // ------------------------------------------------
 
-    const beforeSavePath =
-      `.automation-queue/${job.id}-before-save.png`;
-
-    await page.screenshot({
-      path: beforeSavePath,
-      fullPage: true,
-    });
-
-    console.log(
-      "Pre-save screenshot:",
-      beforeSavePath
-    );
+    const debugScreenshots = process.env.MSPT_DEBUG_SCREENSHOTS === "1";
+    const beforeSavePath = debugScreenshots ? `.automation-queue/${job.id}-before-save.png` : null;
+    if (beforeSavePath) {
+      await page.screenshot({ path: beforeSavePath, fullPage: true });
+      console.log("Debug screenshot:", beforeSavePath);
+    }
 
     // ------------------------------------------------
     // FINAL VALIDATION
     // ------------------------------------------------
 
+    if (onStage) await onStage("Checking fields before Save");
     const finalName =
       await signatureNameInput.inputValue();
 
@@ -767,7 +694,7 @@ async function processISTPackage(job) {
 
     if (finalType !== "Digital") {
       throw new Error(
-        `Signature Type changed before Save. Current value: ${finalType}`
+        "Signature Type changed before Save."
       );
     }
 
@@ -815,37 +742,37 @@ async function processISTPackage(job) {
       "CLICKING SAVE..."
     );
 
-    // IMPORTANT:
-    // Never retry this click automatically.
+    // A durable checkpoint is written BEFORE attempting Save. If Playwright
+    // fails or the process dies after this point, the outcome needs review.
+    if (typeof onBeforeSave === "function") {
+      await onBeforeSave();
+    }
+
+    // IMPORTANT: never repeat this click automatically.
     await saveButton.click();
 
     console.log(
       "Save clicked once."
     );
 
+    // Never retry the Save click.
     await page.waitForTimeout(3000);
 
     // ------------------------------------------------
     // POST-SAVE SCREENSHOT
     // ------------------------------------------------
 
-    const afterSavePath =
-      `.automation-queue/${job.id}-after-save.png`;
-
-    await page.screenshot({
-      path: afterSavePath,
-      fullPage: true,
-    });
-
-    console.log(
-      "Post-save screenshot:",
-      afterSavePath
-    );
+    const afterSavePath = debugScreenshots ? `.automation-queue/${job.id}-after-save.png` : null;
+    if (afterSavePath) {
+      await page.screenshot({ path: afterSavePath, fullPage: true });
+      console.log("Debug screenshot:", afterSavePath);
+    }
 
     // ------------------------------------------------
-    // VERIFY SAVE THROUGH API
+    // API VERIFICATION
     // ------------------------------------------------
 
+    if (onStage) await onStage("Verifying sign-out with MSPT");
     console.log(
       "Verifying through MSPT API..."
     );
@@ -870,13 +797,10 @@ async function processISTPackage(job) {
         {
           signatureName:
             verifiedPackage.signatureName,
-
           signatureDate:
             verifiedPackage.signatureDate,
-
           signatureTypeId:
             verifiedPackage.signatureTypeId,
-
           hasSignature:
             Boolean(
               verifiedPackage.signature
@@ -884,23 +808,15 @@ async function processISTPackage(job) {
         }
       );
 
-      const correctName =
+      if (
         String(
           verifiedPackage.signatureName ||
             ""
         ).trim() ===
-        String(
-          job.signatureField
-        ).trim();
-
-      const hasSignatureDate =
-        Boolean(
-          verifiedPackage.signatureDate
-        );
-
-      if (
-        correctName &&
-        hasSignatureDate
+          String(
+            job.signatureField
+          ).trim() &&
+        verifiedPackage.signatureDate
       ) {
         break;
       }
@@ -925,7 +841,7 @@ async function processISTPackage(job) {
 
     if (!verified) {
       throw new Error(
-        "Save was clicked ONCE, but MSPT API did not confirm RETAG + signatureDate. Save was NOT retried."
+        `Save was clicked ONCE, but MSPT API did not confirm ${job.signatureField} + signatureDate. Do not automatically retry Save.`
       );
     }
 
@@ -992,24 +908,14 @@ async function processISTPackage(job) {
       error.message
     );
 
-    const failurePath =
-      `.automation-queue/${job.id}-FAILED.png`;
-
-    try {
-      await page.screenshot({
-        path: failurePath,
-        fullPage: true,
-      });
-
-      console.log(
-        "Failure screenshot:",
-        failurePath
-      );
-    } catch (screenshotError) {
-      console.log(
-        "Could not capture failure screenshot:",
-        screenshotError.message
-      );
+    if (process.env.MSPT_DEBUG_SCREENSHOTS === "1") {
+      const failurePath = `.automation-queue/${job.id}-FAILED.png`;
+      try {
+        await page.screenshot({ path: failurePath, fullPage: true });
+        console.log("Failure diagnostic screenshot:", failurePath);
+      } catch (screenshotError) {
+        console.log("Could not capture failure screenshot:", screenshotError.message);
+      }
     }
 
     throw error;

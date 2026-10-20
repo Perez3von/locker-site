@@ -1,6 +1,8 @@
 "use client";
 
 import Link from "next/link";
+import BarcodeCamera from "./components/BarcodeCamera";
+import controls from "./CollectControls.module.css";
 
 import {
   useEffect,
@@ -34,36 +36,35 @@ function parseIds(text) {
 }
 
 function readDraft() {
+  const empty = { data: [], signatureName: "RETAG" };
   try {
     const raw = localStorage.getItem(DRAFT_CACHE_KEY);
-
-    if (!raw) return [];
-
+    if (!raw) return empty;
     const cache = JSON.parse(raw);
-
     if (
       !cache.savedAt ||
       !Array.isArray(cache.data) ||
       Date.now() - cache.savedAt > DRAFT_CACHE_DURATION
     ) {
       localStorage.removeItem(DRAFT_CACHE_KEY);
-      return [];
+      return empty;
     }
-
-    return cache.data;
+    // Older drafts contain only the ID array. Keep them intact.
+    return {
+      data: cache.data,
+      signatureName: typeof cache.signatureName === "string"
+        ? cache.signatureName : "RETAG",
+    };
   } catch {
-    return [];
+    return empty;
   }
 }
 
-function writeDraft(data) {
+function writeDraft(data, signatureName) {
   try {
     localStorage.setItem(
       DRAFT_CACHE_KEY,
-      JSON.stringify({
-        savedAt: Date.now(),
-        data,
-      })
+      JSON.stringify({ savedAt: Date.now(), data, signatureName })
     );
   } catch (error) {
     console.error("Draft save failed:", error);
@@ -123,6 +124,12 @@ export default function Home() {
   const inputRef = useRef(null);
 
   const [input, setInput] = useState("");
+  const [signatureName, setSignatureName] = useState("RETAG");
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [rescanId, setRescanId] = useState(null);
+  const [editId, setEditId] = useState(null);
+  const [editValue, setEditValue] = useState("");
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
   const [draftIds, setDraftIds] = useState([]);
   const [wipItems, setWipItems] = useState([]);
 
@@ -139,7 +146,9 @@ export default function Home() {
   ======================================================= */
 
   useEffect(() => {
-    setDraftIds(readDraft());
+    const draft = readDraft();
+    setDraftIds(draft.data);
+    setSignatureName(draft.signatureName);
     setDraftLoaded(true);
 
     const unsubscribe = subscribeToWip(
@@ -163,11 +172,19 @@ export default function Home() {
     if (!draftLoaded) return;
 
     const timer = setTimeout(() => {
-      writeDraft(draftIds);
+      writeDraft(draftIds, signatureName);
     }, DRAFT_SAVE_DEBOUNCE);
 
     return () => clearTimeout(timer);
-  }, [draftIds, draftLoaded]);
+  }, [draftIds, signatureName, draftLoaded]);
+
+  useEffect(() => {
+    setSelectedIds((current) => {
+      const allowed = new Set(draftIds);
+      const next = new Set([...current].filter((id) => allowed.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [draftIds]);
 
   const wipIdSet = useMemo(
     () =>
@@ -293,7 +310,64 @@ export default function Home() {
     }
   }
 
+  function acceptCameraId(value) {
+    const id = normalizeId(value);
+    if (!id || /[\s,;]/.test(id)) return false;
+    if (rescanId) {
+      if (id !== rescanId && (draftIds.includes(id) || wipIdSet.has(id))) {
+        showMessage(`${id} already exists`, "error");
+        return false;
+      }
+      setDraftIds((current) => current.map((v) => v === rescanId ? id : v));
+      setSelectedIds((current) => {
+        if (!current.has(rescanId)) return current;
+        const next = new Set(current);
+        next.delete(rescanId);
+        next.add(id);
+        return next;
+      });
+      setRescanId(null);
+      showMessage(`${id} verified`);
+      return true;
+    }
+    if (draftIds.includes(id) || wipIdSet.has(id)) {
+      showMessage(`${id} already exists`, "error");
+      return false;
+    }
+    setDraftIds((current) => [...current, id]);
+    showMessage(`${id} added`);
+    return true;
+  }
+
+  function saveEdit() {
+    const id = normalizeId(editValue);
+    if (!id || /[\s,;]/.test(id)) {
+      showMessage("Enter one valid ID", "error");
+      return;
+    }
+    if (id !== editId && (draftIds.includes(id) || wipIdSet.has(id))) {
+      showMessage(`${id} already exists`, "error");
+      return;
+    }
+    setDraftIds((current) => current.map((v) => v === editId ? id : v));
+    setSelectedIds((current) => {
+      if (!current.has(editId)) return current;
+      const next = new Set(current);
+      next.delete(editId);
+      next.add(id);
+      return next;
+    });
+    setEditId(null);
+    showMessage("ID updated");
+  }
+
+  function removeSelectedDraft() {
+    setDraftIds((current) => current.filter((id) => !selectedIds.has(id)));
+    setSelectedIds(new Set());
+  }
+
   function removeDraft(id) {
+    setSelectedIds((current) => { const next = new Set(current); next.delete(id); return next; });
     setDraftIds((current) =>
       current.filter(
         (item) => item !== id
@@ -303,6 +377,7 @@ export default function Home() {
 
   function clearDraft() {
     setDraftIds([]);
+    setSelectedIds(new Set());
     setInput("");
 
     showMessage("Collection cleared");
@@ -316,9 +391,9 @@ export default function Home() {
      SEND TO FIREBASE WIP
   ======================================================= */
 
-  async function handleSendToWip() {
+  async function handleSendToWip(selectedOnly = false) {
     if (
-      draftIds.length === 0 ||
+      (selectedOnly ? selectedIds.size === 0 : draftIds.length === 0) ||
       sending
     ) {
       return;
@@ -333,13 +408,18 @@ export default function Home() {
       return;
     }
 
-    const sendingIds = [...draftIds];
+    const sendingIds = selectedOnly ? draftIds.filter((id) => selectedIds.has(id)) : [...draftIds];
+    const assignedName = signatureName.trim();
+    if (!assignedName || assignedName.length > 250) {
+      showMessage("Enter a Signed By name (1–250 characters) before sending to WIP.", "error");
+      return;
+    }
 
     setSending(true);
 
     try {
       const result =
-        await sendToWip(sendingIds);
+        await sendToWip(sendingIds, assignedName);
 
       const completed = new Set([
         ...result.added,
@@ -347,10 +427,9 @@ export default function Home() {
       ]);
 
       setDraftIds((current) =>
-        current.filter(
-          (id) => !completed.has(id)
-        )
+        current.filter((id) => !completed.has(id))
       );
+      setSelectedIds((current) => new Set([...current].filter((id) => !completed.has(id))));
 
       if (result.failed.length) {
         showMessage(
@@ -472,6 +551,25 @@ export default function Home() {
         {/* COLLECTOR */}
 
         <section className="collector-card">
+          <div className={controls.quickBar}>
+            <div className={controls.cameraCopy}>
+              <strong>Camera capture</strong>
+              <span>Capture, confirm, then add each ID</span>
+            </div>
+            <button
+              type="button"
+              className={controls.cameraButton}
+              onClick={() => { setRescanId(null); setCameraOpen(true); }}
+              aria-label="Open camera scanner"
+            >
+              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                <path d="M5 7h3l2-2h4l2 2h3a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2Z" stroke="currentColor" strokeWidth="1.8" strokeLinejoin="round"/>
+                <circle cx="12" cy="13" r="3.2" stroke="currentColor" strokeWidth="1.8"/>
+              </svg>
+              Open camera
+            </button>
+          </div>
+
           <div className="collector-label">
             <div>
               <span className="eyebrow">
@@ -490,6 +588,19 @@ export default function Home() {
             )}
           </div>
 
+          <label className={controls.nameField}>
+            <span>Signed By <span className={controls.fieldNote}>· Assigned to IDs sent to WIP</span></span>
+            <input
+              value={signatureName}
+              onChange={(event) => setSignatureName(event.target.value)}
+              maxLength={250}
+              placeholder="RETAG, RTS, or recipient name"
+              autoComplete="off"
+              spellCheck={false}
+              aria-invalid={!signatureName.trim()}
+            />
+          </label>
+
           <textarea
             ref={inputRef}
             className="id-input"
@@ -503,7 +614,6 @@ export default function Home() {
             placeholder={
               "Scan an ID or paste a list..."
             }
-            autoFocus
           />
 
           <div className="input-footer">
@@ -525,6 +635,12 @@ export default function Home() {
             </button>
           </div>
 
+          {cameraOpen && <BarcodeCamera
+            replaceId={rescanId}
+            onAdd={acceptCameraId}
+            onClose={() => { setCameraOpen(false); setRescanId(null); }}
+          />}
+
           {/* COLLECTION */}
 
           {draftIds.length > 0 && (
@@ -540,12 +656,16 @@ export default function Home() {
                   </h3>
                 </div>
 
-                <button
-                  className="quiet-button danger-text"
-                  onClick={clearDraft}
-                >
-                  Clear all
-                </button>
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}>
+                    <input type="checkbox" checked={draftIds.length > 0 && draftIds.every((id) => selectedIds.has(id))}
+                      onChange={(e) => setSelectedIds(e.target.checked ? new Set(draftIds) : new Set())} />
+                    Select all
+                  </label>
+                  {selectedIds.size > 0 && <button className="quiet-button" disabled={sending || !connected || !signatureName.trim()} onClick={() => handleSendToWip(true)}>Send selected ({selectedIds.size}) to WIP</button>}
+                  {selectedIds.size > 0 && <button className="quiet-button danger-text" onClick={removeSelectedDraft}>Remove selected ({selectedIds.size})</button>}
+                  <button className="quiet-button danger-text" onClick={clearDraft}>Clear all</button>
+                </div>
               </div>
 
               <div className="id-grid">
@@ -554,23 +674,17 @@ export default function Home() {
                     className="id-chip"
                     key={id}
                   >
-                    <div className="id-chip-icon">
-                      <span />
-                    </div>
-
-                    <span className="id-value">
-                      {id}
-                    </span>
-
-                    <button
-                      className="chip-remove"
-                      onClick={() =>
-                        removeDraft(id)
-                      }
-                      aria-label={`Remove ${id}`}
-                    >
-                      ×
-                    </button>
+                    <input type="checkbox" aria-label={`Select ${id}`} checked={selectedIds.has(id)} onChange={(e) => {
+                      setSelectedIds((current) => { const next = new Set(current); if (e.target.checked) next.add(id); else next.delete(id); return next; });
+                    }} />
+                    {editId === id ? <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                      <input aria-label={`Edit ${id}`} value={editValue} onChange={(e) => setEditValue(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") saveEdit(); if (e.key === "Escape") setEditId(null); }} />
+                      <button onClick={saveEdit}>Save</button>
+                      <button onClick={() => setEditId(null)}>Cancel</button>
+                    </div> : <span className="id-value">{id}</span>}
+                    <button className="chip-remove" title="Edit ID" aria-label={`Edit ${id}`} onClick={() => { setEditId(id); setEditValue(id); }}>✎</button>
+                    <button className="chip-remove" title="Rescan ID" aria-label={`Rescan ${id}`} onClick={() => { setRescanId(id); setCameraOpen(true); }}>▣</button>
+                    <button className="chip-remove" onClick={() => removeDraft(id)} aria-label={`Remove ${id}`}>×</button>
                   </div>
                 ))}
               </div>
@@ -623,7 +737,7 @@ export default function Home() {
                   </strong>
 
                   <span>
-                    Ready to move into WIP
+                    Signed By: {signatureName.trim() || "Name required"}
                   </span>
                 </div>
               </div>
@@ -631,11 +745,12 @@ export default function Home() {
               <button
                 className="floating-send-button"
                 onClick={
-                  handleSendToWip
+                  () => handleSendToWip(false)
                 }
                 disabled={
                   sending ||
-                  !connected
+                  !connected ||
+                  !signatureName.trim()
                 }
               >
                 {sending
