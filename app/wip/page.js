@@ -138,9 +138,8 @@ export default function WipPage() {
       <div className={styles.shell}>
         <section className={styles.heading}>
           <div>
-            <p className={styles.eyebrow}>Package queue</p>
+            <p className={styles.eyebrow}>Live Package queue</p>
             <h1>Work in Progress</h1>
-            <p>Packages submitted for processing. Sign-outs are handled by the owner.</p>
           </div>
           <Link className={styles.collectLink} href="/">+ Collect IDs</Link>
         </section>
