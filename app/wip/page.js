@@ -1,513 +1,216 @@
 "use client";
 
 import Link from "next/link";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { collection, limit, onSnapshot, orderBy, query, startAfter, where } from "firebase/firestore";
+import { db } from "../../lib/firebase";
+import styles from "./EmployeeWip.module.css";
 
-import {
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
+const PAGE_SIZE = 50;
+const FILTERS = [
+  { value: "all", label: "All" },
+  { value: "ready", label: "Waiting" },
+  { value: "queued", label: "Queued" },
+  { value: "processing", label: "Processing" },
+  { value: "review", label: "Needs review" },
+  { value: "failed", label: "Failed" },
+];
 
-import {
-  removeWipItem,
-  removeWipItems,
-  subscribeToWip,
-  updateWipItem,
-} from "../../lib/firebase";
-
-function normalizeId(value) {
-  return String(value || "").trim().toUpperCase();
+function asMillis(value) {
+  if (value && typeof value.toMillis === "function") return value.toMillis();
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return null;
 }
 
-function formatTime(timestamp) {
+function formatTime(millis) {
+  if (!Number.isFinite(millis)) return "Recently added";
   return new Intl.DateTimeFormat("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-  }).format(new Date(timestamp));
+    month: "short", day: "numeric", hour: "numeric", minute: "2-digit",
+  }).format(millis);
 }
 
-function getDateKey(timestamp) {
-  const date = new Date(timestamp);
-
-  return `${date.getFullYear()}-${date.getMonth()}-${date.getDate()}`;
+function displayStatus(status) {
+  if (status === "queued") return { label: "Queued", detail: "Waiting for the owner to process", tone: "queued" };
+  if (status === "processing") return { label: "Processing", detail: "Sign-out in progress", tone: "processing" };
+  if (status === "review") return { label: "Needs review", detail: "Awaiting owner verification", tone: "review" };
+  if (status === "failed") return { label: "Failed", detail: "Awaiting owner action", tone: "failed" };
+  return { label: "Waiting", detail: "Awaiting sign-out", tone: "ready" };
 }
 
-function getDateLabel(timestamp) {
-  const target = new Date(timestamp);
-  const today = new Date();
-
-  const targetDay = new Date(
-    target.getFullYear(),
-    target.getMonth(),
-    target.getDate()
-  );
-
-  const todayDay = new Date(
-    today.getFullYear(),
-    today.getMonth(),
-    today.getDate()
-  );
-
-  const difference = Math.round(
-    (todayDay - targetDay) / 86400000
-  );
-
-  if (difference === 0) return "Today";
-  if (difference === 1) return "Yesterday";
-
-  return target.toLocaleDateString("en-US", {
-    month: "long",
-    day: "numeric",
-    year:
-      target.getFullYear() !== today.getFullYear()
-        ? "numeric"
-        : undefined,
-  });
+function normalizeStatus(value) {
+  const normalized = String(value || "ready").toLowerCase();
+  return FILTERS.some((entry) => entry.value === normalized) ? normalized : "ready";
 }
 
 export default function WipPage() {
+  const [page, setPage] = useState({ number: 1, cursor: null, previous: [] });
   const [items, setItems] = useState([]);
-  const [selected, setSelected] = useState(() => new Set());
-
-  const [connected, setConnected] = useState(false);
+  const [hasNext, setHasNext] = useState(false);
   const [loading, setLoading] = useState(true);
-
-  const [editingId, setEditingId] = useState(null);
-  const [editingValue, setEditingValue] = useState("");
-
-  const [removing, setRemoving] = useState(false);
-
-  const [message, setMessage] = useState("");
-  const [messageType, setMessageType] = useState("success");
+  const [connection, setConnection] = useState("loading");
+  const [error, setError] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [search, setSearch] = useState("");
+  const lastVisibleRef = useRef(null);
 
   useEffect(() => {
-    const unsubscribe = subscribeToWip(
-      (wipItems) => {
-        setItems(wipItems);
-        setConnected(true);
-        setLoading(false);
-      },
-      () => {
-        setConnected(false);
-        setLoading(false);
-      }
-    );
+    const constraints = [
+      where("status", "==", "wip"),
+      orderBy("createdAt", "desc"),
+      limit(PAGE_SIZE + 1),
+    ];
+    if (page.cursor) constraints.push(startAfter(page.cursor));
 
-    return unsubscribe;
-  }, []);
-
-  useEffect(() => {
-    const existing = new Set(
-      items.map((item) => item.internalId)
-    );
-
-    setSelected((current) => {
-      return new Set(
-        [...current].filter((id) => existing.has(id))
-      );
-    });
-  }, [items]);
-
-  const groups = useMemo(() => {
-    const grouped = {};
-
-    items.forEach((item) => {
-      const key = getDateKey(item.createdAt);
-
-      if (!grouped[key]) {
-        grouped[key] = {
-          key,
-          timestamp: item.createdAt,
-          items: [],
+    const wipQuery = query(collection(db, "items"), ...constraints);
+    const unsubscribe = onSnapshot(wipQuery, (snapshot) => {
+      const visible = snapshot.docs.slice(0, PAGE_SIZE);
+      lastVisibleRef.current = visible.at(-1) || null;
+      setHasNext(snapshot.docs.length > PAGE_SIZE);
+      setItems(visible.map((document) => {
+        const data = document.data();
+        return {
+          id: document.id,
+          internalId: String(data.internalId || document.id),
+          signatureName: typeof data.signatureName === "string" ? data.signatureName : "Not assigned",
+          automationStatus: normalizeStatus(data.automationStatus),
+          createdAt: asMillis(data.createdAt),
         };
-      }
-
-      grouped[key].items.push(item);
+      }));
+      setError("");
+      setLoading(false);
+      setConnection(snapshot.metadata.fromCache ? "cached" : "synced");
+    }, (cause) => {
+      lastVisibleRef.current = null;
+      setItems([]);
+      setHasNext(false);
+      setLoading(false);
+      setConnection("error");
+      setError(cause?.message || "Unable to load WIP records.");
     });
+    return unsubscribe;
+  }, [page.cursor]);
 
-    return Object.values(grouped).sort(
-      (a, b) => b.timestamp - a.timestamp
+  const filteredItems = useMemo(() => {
+    const term = search.trim().toUpperCase();
+    return items.filter((item) =>
+      (filter === "all" || item.automationStatus === filter) &&
+      (!term || item.internalId.toUpperCase().includes(term) || item.signatureName.toUpperCase().includes(term))
     );
-  }, [items]);
+  }, [items, filter, search]);
 
-  const allSelected =
-    items.length > 0 &&
-    selected.size === items.length;
-
-  function showMessage(text, type = "success") {
-    setMessage(text);
-    setMessageType(type);
+  function nextPage() {
+    if (!hasNext || !lastVisibleRef.current) return;
+    setLoading(true);
+    setPage((current) => ({
+      number: current.number + 1,
+      cursor: lastVisibleRef.current,
+      previous: [...current.previous, current.cursor],
+    }));
   }
 
-  function toggleItem(id) {
-    setSelected((current) => {
-      const next = new Set(current);
-
-      if (next.has(id)) {
-        next.delete(id);
-      } else {
-        next.add(id);
-      }
-
-      return next;
-    });
-  }
-
-  function toggleAll() {
-    if (allSelected) {
-      setSelected(new Set());
-      return;
-    }
-
-    setSelected(
-      new Set(items.map((item) => item.internalId))
-    );
-  }
-
-  async function removeOne(id) {
-    try {
-      await removeWipItem(id);
-      showMessage(`${id} removed`);
-    } catch (error) {
-      showMessage(
-        error?.message || "Could not remove item.",
-        "error"
-      );
-    }
-  }
-
-  async function removeSelected() {
-    if (!selected.size || removing) return;
-
-    const ids = [...selected];
-
-    setRemoving(true);
-
-    try {
-      await removeWipItems(ids);
-
-      setSelected(new Set());
-
-      showMessage(
-        ids.length === 1
-          ? "1 item removed"
-          : `${ids.length} items removed`
-      );
-    } catch (error) {
-      showMessage(
-        error?.message || "Could not remove selected items.",
-        "error"
-      );
-    } finally {
-      setRemoving(false);
-    }
-  }
-
-  function beginEdit(item) {
-    setEditingId(item.internalId);
-    setEditingValue(item.internalId);
-  }
-
-  function cancelEdit() {
-    setEditingId(null);
-    setEditingValue("");
-  }
-
-  async function saveEdit() {
-    const newId = normalizeId(editingValue);
-
-    if (!editingId || !newId) return;
-
-    if (newId === editingId) {
-      cancelEdit();
-      return;
-    }
-
-    try {
-      await updateWipItem(editingId, newId);
-
-      showMessage(`${editingId} changed to ${newId}`);
-
-      cancelEdit();
-    } catch (error) {
-      showMessage(
-        error?.message || "Could not update item.",
-        "error"
-      );
-    }
+  function previousPage() {
+    if (page.number === 1) return;
+    setLoading(true);
+    setPage((current) => ({
+      number: current.number - 1,
+      cursor: current.previous.at(-1) || null,
+      previous: current.previous.slice(0, -1),
+    }));
   }
 
   return (
     <main className="app-shell">
       <header className="topbar">
         <div className="topbar-inner">
-          <Link href="/" className="brand">
-            Locker
-          </Link>
-
-          <nav className="nav-tabs">
-            <Link href="/" className="nav-tab">
-              Collect
-            </Link>
-
-            <Link href="/wip" className="nav-tab active">
-              WIP
-
-              {items.length > 0 && (
-                <span className="nav-count">
-                  {items.length}
-                </span>
-              )}
-            </Link>
+          <Link href="/" className="brand">Locker</Link>
+          <nav className="nav-tabs" aria-label="Main navigation">
+            <Link href="/" className="nav-tab">Collect</Link>
+            <Link href="/wip" className="nav-tab active" aria-current="page">WIP</Link>
           </nav>
-
           <div className="sync-status">
-            <span
-              className={`sync-dot ${
-                connected ? "online" : ""
-              }`}
-            />
-
-            {connected ? "Synced" : "Offline"}
+            <span className={`sync-dot ${connection === "synced" ? "online" : ""}`} />
+            {connection === "synced" ? "Synced" : connection === "cached" ? "Cached" : connection === "error" ? "Offline" : "Connecting"}
           </div>
         </div>
       </header>
 
-      <div className="wip-page">
-        <section className="wip-hero">
+      <div className={styles.shell}>
+        <section className={styles.heading}>
           <div>
-            <div className="wip-title-row">
-              <div className="wip-title-icon">
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  aria-hidden="true"
-                >
-                  <path
-                    d="M5 7.5h14M7 4h10a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"
-                    stroke="currentColor"
-                    strokeWidth="1.7"
-                    strokeLinecap="round"
-                  />
-                  <path
-                    d="M9 12h6M9 16h4"
-                    stroke="currentColor"
-                    strokeWidth="1.7"
-                    strokeLinecap="round"
-                  />
-                </svg>
-              </div>
-
-              <div>
-                <h1>Work in Progress</h1>
-                <p>
-                  Items waiting for processing.
-                </p>
-              </div>
-            </div>
+            <p className={styles.eyebrow}>Package queue</p>
+            <h1>Work in Progress</h1>
+            <p>Packages submitted for processing. Sign-outs are handled by the owner.</p>
           </div>
-
-          <div className="wip-total-card">
-            <span>Waiting</span>
-            <strong>{items.length}</strong>
-          </div>
+          <Link className={styles.collectLink} href="/">+ Collect IDs</Link>
         </section>
 
-        <section className="wip-content">
-          <div className="wip-toolbar">
-            <label className="select-all">
+        <section className={styles.panel} aria-label="WIP packages">
+          <div className={styles.toolbar}>
+            <label className={styles.searchWrap}>
+              <span className={styles.inputLabel}>Find on this page</span>
               <input
-                type="checkbox"
-                checked={allSelected}
-                onChange={toggleAll}
-                disabled={items.length === 0}
+                className={styles.search}
+                placeholder="Internal ID or Signed By"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                autoComplete="off"
               />
-
-              <span>
-                {allSelected
-                  ? "All selected"
-                  : "Select all"}
-              </span>
             </label>
-
-            {selected.size > 0 && (
-              <button
-                className="remove-selected"
-                onClick={removeSelected}
-                disabled={removing}
-              >
-                {removing
-                  ? "Removing..."
-                  : `Remove ${selected.size}`}
-              </button>
-            )}
+            <label className={styles.filterWrap}>
+              <span className={styles.inputLabel}>Status</span>
+              <select className={styles.select} value={filter} onChange={(event) => setFilter(event.target.value)}>
+                {FILTERS.map((entry) => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
+              </select>
+            </label>
           </div>
 
-          {loading && (
-            <div className="wip-empty">
-              <div className="empty-shape">
-                <span />
-                <span />
-                <span />
-              </div>
+          <div className={styles.summary}>
+            <span>Page {page.number} · {items.length} record{items.length === 1 ? "" : "s"}</span>
+            <span className={styles.readOnly}>View only</span>
+          </div>
 
-              <h2>Loading WIP</h2>
+          {error && <div className={styles.error} role="alert">{error}</div>}
+          {loading ? (
+            <div className={styles.empty}>Loading packages…</div>
+          ) : filteredItems.length === 0 ? (
+            <div className={styles.empty}>
+              <strong>{items.length ? "No matches on this page" : "Nothing in WIP on this page"}</strong>
+              <p>{items.length ? "Try another filter or go to a different page." : "Collected packages will appear here."}</p>
             </div>
-          )}
-
-          {!loading && items.length === 0 && (
-            <div className="wip-empty">
-              <div className="empty-shape">
-                <span />
-                <span />
-                <span />
-              </div>
-
-              <h2>Nothing waiting</h2>
-
-              <p>
-                IDs you send from Collect will appear here.
-              </p>
-
-              <Link href="/" className="empty-action">
-                Collect IDs
-              </Link>
-            </div>
-          )}
-
-          {groups.map((group) => (
-            <section
-              className="wip-group"
-              key={group.key}
-            >
-              <div className="group-heading">
-                <h2>
-                  {getDateLabel(group.timestamp)}
-                </h2>
-
-                <span>
-                  {group.items.length}
-                </span>
-              </div>
-
-              <div className="wip-list">
-                {group.items.map((item) => (
-                  <div
-                    className={`wip-row ${
-                      selected.has(item.internalId)
-                        ? "selected"
-                        : ""
-                    }`}
-                    key={item.internalId}
-                  >
-                    <label className="custom-check">
-                      <input
-                        type="checkbox"
-                        checked={selected.has(
-                          item.internalId
-                        )}
-                        onChange={() =>
-                          toggleItem(item.internalId)
-                        }
-                      />
-
-                      <span />
-                    </label>
-
-                    <div className="wip-item-symbol">
-                      <span />
+          ) : (
+            <div className={styles.list}>
+              {filteredItems.map((item) => {
+                const status = displayStatus(item.automationStatus);
+                return (
+                  <article className={styles.item} key={item.id}>
+                    <div className={styles.mainInfo}>
+                      <div className={styles.id}>{item.internalId}</div>
+                      <div className={styles.subtext}>Added {formatTime(item.createdAt)}</div>
+                      <div className={styles.signedBy}><span>Signed By</span> <strong>{item.signatureName}</strong></div>
                     </div>
-
-                    {editingId === item.internalId ? (
-                      <div className="wip-edit">
-                        <input
-                          value={editingValue}
-                          onChange={(event) =>
-                            setEditingValue(
-                              event.target.value
-                            )
-                          }
-                          onKeyDown={(event) => {
-                            if (event.key === "Enter") {
-                              saveEdit();
-                            }
-
-                            if (event.key === "Escape") {
-                              cancelEdit();
-                            }
-                          }}
-                          autoFocus
-                        />
-
-                        <button
-                          className="edit-save"
-                          onClick={saveEdit}
-                        >
-                          Save
-                        </button>
-
-                        <button
-                          className="quiet-button"
-                          onClick={cancelEdit}
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    ) : (
-                      <>
-                        <div className="wip-item-main">
-                          <strong>{item.internalId}</strong>
-
-                          <span>
-                            Added {formatTime(item.createdAt)}
-                          </span>
-                        </div>
-
-                        <div className="wip-state">
-                          <span />
-                          Waiting
-                        </div>
-
-                        <div className="row-actions">
-                          <button
-                            className="circle-action"
-                            onClick={() => beginEdit(item)}
-                            aria-label={`Edit ${item.internalId}`}
-                          >
-                            ✎
-                          </button>
-
-                          <button
-                            className="circle-action delete"
-                            onClick={() =>
-                              removeOne(item.internalId)
-                            }
-                            aria-label={`Remove ${item.internalId}`}
-                          >
-                            ×
-                          </button>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </section>
-          ))}
-
-          {message && (
-            <div
-              className={`toast-message ${
-                messageType === "error" ? "error" : ""
-              }`}
-            >
-              <span className="toast-icon">
-                {messageType === "error" ? "!" : "✓"}
-              </span>
-
-              {message}
+                    <div className={styles.statusBlock}>
+                      <span className={`${styles.status} ${styles[status.tone]}`}>
+                        <span className={styles.statusDot} />{status.label}
+                      </span>
+                      <span className={styles.statusDetail}>{status.detail}</span>
+                    </div>
+                  </article>
+                );
+              })}
             </div>
           )}
+
+          <div className={styles.pagination}>
+            <button type="button" onClick={previousPage} disabled={loading || page.number === 1}>
+              ← Previous
+            </button>
+            <span>Page {page.number}</span>
+            <button type="button" onClick={nextPage} disabled={loading || !hasNext}>
+              Next →
+            </button>
+          </div>
+          <p className={styles.note}>Showing at most 50 WIP records per page. Search and status filters apply to the current page.</p>
         </section>
       </div>
     </main>

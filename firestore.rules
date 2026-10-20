@@ -1,0 +1,44 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /items/{documentId} {
+      // The collection workflow reads individual IDs to avoid duplicates,
+      // including IDs already completed by the local automation worker.
+      // Anyone with the Firebase client config can make these reads.
+      allow get: if true;
+
+      // Public collection clients can query ONLY WIP records.
+      // Queries must include where("status", "==", "wip").
+      allow list: if resource.data.status == "wip";
+
+      // Staff can add a NEW WIP record. They cannot assign processing
+      // status, completion metadata, automation IDs, or other privileged fields.
+      allow create: if request.resource.data.keys().hasOnly([
+          "internalId", "signatureName", "status", "createdAt", "updatedAt"
+        ])
+        && request.resource.data.keys().hasAll([
+          "internalId", "signatureName", "status", "createdAt", "updatedAt"
+        ])
+        && request.resource.data.internalId is string
+        && request.resource.data.internalId == documentId
+        && request.resource.data.internalId.matches("^[A-Z0-9_-]{1,128}$")
+        && request.resource.data.signatureName is string
+        && request.resource.data.signatureName.size() >= 1
+        && request.resource.data.signatureName.size() <= 250
+        && request.resource.data.status == "wip"
+        && request.resource.data.createdAt == request.time
+        && request.resource.data.updatedAt == request.time;
+
+      // All browser updates and deletes are denied, including attempts
+      // to change Signed By, cancel jobs, sign out, or mark Completed.
+      // Firebase Admin SDK bypasses Firestore Security Rules.
+      allow update, delete: if false;
+    }
+
+    // No other collection is readable or writable by public web clients.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
