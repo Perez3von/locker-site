@@ -53,7 +53,7 @@ function readDraft() {
     return {
       data: cache.data,
       signatureName: typeof cache.signatureName === "string"
-        ? cache.signatureName : "RETAG",
+        ? cache.signatureName : "",
     };
   } catch {
     return empty;

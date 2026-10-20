@@ -43,56 +43,87 @@ function releaseStream(stream) {
   return tracks.every((track) => track.readyState === "ended");
 }
 
-function frameCanvas(video, crop = false, highContrast = false) {
-  const sw = video.videoWidth;
-  const sh = video.videoHeight;
-  const sx = crop ? sw * 0.07 : 0;
-  const sy = crop ? sh * 0.20 : 0;
-  const sourceWidth = crop ? sw * 0.86 : sw;
-  const sourceHeight = crop ? sh * 0.60 : sh;
-  const scale = Math.min(1, MAX_DECODE_WIDTH / sourceWidth);
+// A mobile browser may supply portrait video even when the scanner is wide.
+// Match CSS object-fit: cover (centered) so captured pixels are exactly those
+// visible behind the green guide, not the hidden portions of the video frame.
+function coverSourceRect(videoWidth, videoHeight, viewerWidth, viewerHeight) {
+  if (!(videoWidth > 0 && videoHeight > 0 && viewerWidth > 0 && viewerHeight > 0)) {
+    throw new Error("Camera preview dimensions are not ready. Try again.");
+  }
+
+  const videoRatio = videoWidth / videoHeight;
+  const viewerRatio = viewerWidth / viewerHeight;
+  if (videoRatio > viewerRatio) {
+    const width = videoHeight * viewerRatio;
+    return { sx: (videoWidth - width) / 2, sy: 0, width, height: videoHeight };
+  }
+  const height = videoWidth / viewerRatio;
+  return { sx: 0, sy: (videoHeight - height) / 2, width: videoWidth, height };
+}
+
+// Capture one snapshot per attempted frame. All decoder variants and the frozen
+// confirmation photo operate on this SAME snapshot.
+function visibleFrameCanvas(video, viewer) {
+  const bounds = coverSourceRect(
+    video.videoWidth, video.videoHeight,
+    viewer.clientWidth, viewer.clientHeight
+  );
+  const scale = Math.min(1, MAX_DECODE_WIDTH / bounds.width);
   const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(sourceWidth * scale));
-  canvas.height = Math.max(1, Math.round(sourceHeight * scale));
+  canvas.width = Math.max(1, Math.round(bounds.width * scale));
+  canvas.height = Math.max(1, Math.round(bounds.height * scale));
   const context = canvas.getContext("2d", { willReadFrequently: true });
   if (!context) throw new Error("Image processing is unavailable on this device.");
-  if (highContrast) context.filter = "contrast(1.45) grayscale(1)";
-  context.drawImage(video, sx, sy, sourceWidth, sourceHeight, 0, 0, canvas.width, canvas.height);
+  context.drawImage(
+    video, bounds.sx, bounds.sy, bounds.width, bounds.height,
+    0, 0, canvas.width, canvas.height
+  );
   return canvas;
 }
 
-/** Up to three decode attempts, but each *frame* contributes at most one vote. */
-async function decodeFrame(reader, video, isValid) {
-  for (const variant of [{ crop: false, contrast: false }, { crop: true, contrast: false }, { crop: false, contrast: true }]) {
+function decodeVariantCanvas(snapshot, guideOnly, highContrast) {
+  // CSS .guides is inset 20% vertically and 9% horizontally.
+  // This region is a fallback, not the only area we decode.
+  const sx = guideOnly ? snapshot.width * 0.09 : 0;
+  const sy = guideOnly ? snapshot.height * 0.20 : 0;
+  const width = guideOnly ? snapshot.width * 0.82 : snapshot.width;
+  const height = guideOnly ? snapshot.height * 0.60 : snapshot.height;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(width));
+  canvas.height = Math.max(1, Math.round(height));
+  const context = canvas.getContext("2d", { willReadFrequently: true });
+  if (!context) throw new Error("Image processing is unavailable on this device.");
+  if (highContrast) context.filter = "contrast(1.45) grayscale(1)";
+  context.drawImage(snapshot, sx, sy, width, height, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
+/** Each physical frame contributes at most one vote, even with decoder fallbacks. */
+async function decodeFrame(reader, snapshot, isValid) {
+  const variants = [
+    { guideOnly: false, contrast: false },
+    { guideOnly: true, contrast: false },
+    { guideOnly: false, contrast: true },
+    { guideOnly: true, contrast: true },
+  ];
+  for (const variant of variants) {
     if (!isValid()) return null;
-    const canvas = frameCanvas(video, variant.crop, variant.contrast);
+    const canvas = decodeVariantCanvas(snapshot, variant.guideOnly, variant.contrast);
     try {
       const decoded = await reader.decodeFromCanvas(canvas);
       const value = normalizeId(decoded.getText());
       if (hasValidId(value)) {
         return { value, format: FORMAT_LABELS[decoded.getBarcodeFormat()] || "Barcode" };
       }
-    } catch { /* A single unsuccessful attempt is expected; try the next variant. */ }
+    } catch { /* A single failed decoder attempt is expected. */ }
     finally { canvas.width = 0; canvas.height = 0; }
   }
   return null;
 }
 
-function capturePreview(video) {
-  const width = Math.min(video.videoWidth, 1050);
-  const height = Math.round(video.videoHeight * width / video.videoWidth);
-  const canvas = document.createElement("canvas");
-  canvas.width = width;
-  canvas.height = height;
-  canvas.getContext("2d").drawImage(video, 0, 0, width, height);
-  const url = canvas.toDataURL("image/jpeg", 0.85);
-  canvas.width = 0;
-  canvas.height = 0;
-  return url;
-}
-
 export default function BarcodeCamera({ onAdd, onClose, replaceId = null }) {
   const videoRef = useRef(null);
+  const viewerRef = useRef(null);
   const streamRef = useRef(null);
   const epochRef = useRef(0);
   const mountedRef = useRef(false);
@@ -258,10 +289,12 @@ export default function BarcodeCamera({ onAdd, onClose, replaceId = null }) {
   async function capture() {
     if (cameraState !== "live" || decodingRef.current || !streamRef.current?.active) return;
     const video = videoRef.current;
-    if (!video?.videoWidth || !video?.videoHeight) {
+    const viewer = viewerRef.current;
+    if (!video?.videoWidth || !video?.videoHeight || !viewer?.clientWidth || !viewer?.clientHeight) {
       setCameraError("Preview is not ready. Wait for focus and try Capture again.");
       return;
     }
+
     decodingRef.current = true;
     const epoch = epochRef.current;
     const isValid = () => mountedRef.current && epoch === epochRef.current && streamRef.current?.active;
@@ -269,10 +302,11 @@ export default function BarcodeCamera({ onAdd, onClose, replaceId = null }) {
     setCameraError("");
     setEditError("");
     const counts = new Map();
-    let preview = "";
+    const previewsByValue = new Map();
+    let fallbackPreview = "";
     let validFrameCount = 0;
+
     try {
-      preview = capturePreview(video);
       const hints = new Map([
         [DecodeHintType.POSSIBLE_FORMATS, FORMATS[scanFormat]],
         [DecodeHintType.TRY_HARDER, true],
@@ -282,26 +316,36 @@ export default function BarcodeCamera({ onAdd, onClose, replaceId = null }) {
         if (!isValid()) return;
         if (i > 0) await pause(BETWEEN_FRAMES_MS);
         if (!isValid()) return;
-        // Count at most one decoded value per distinct camera frame.
-        const decoded = await decodeFrame(reader, video, isValid);
-        if (!isValid()) return;
-        validFrameCount += 1;
-        if (decoded) {
-          // Freeze a frame that actually produced a decoded barcode for the review.
-          preview = capturePreview(video);
-          const current = counts.get(decoded.value) || { ...decoded, votes: 0 };
-          current.votes += 1;
-          counts.set(decoded.value, current);
-          if (current.votes >= 3 && counts.size === 1) break;
+
+        const snapshot = visibleFrameCanvas(video, viewer);
+        try {
+          // Keep the initial frame for an unsuccessful capture, and the exact
+          // decoded frame for any result that needs human confirmation.
+          if (i === 0) fallbackPreview = snapshot.toDataURL("image/jpeg", 0.85);
+          const decoded = await decodeFrame(reader, snapshot, isValid);
+          if (!isValid()) return;
+          validFrameCount += 1;
+
+          if (decoded) {
+            previewsByValue.set(decoded.value, snapshot.toDataURL("image/jpeg", 0.85));
+            const current = counts.get(decoded.value) || { ...decoded, votes: 0 };
+            current.votes += 1;
+            counts.set(decoded.value, current);
+            if (current.votes >= 3 && counts.size === 1) break;
+          }
+        } finally {
+          snapshot.width = 0;
+          snapshot.height = 0;
         }
       }
+
       if (!isValid()) return;
       const candidates = [...counts.values()].sort((a, b) => b.votes - a.votes);
       const winner = candidates[0] || null;
-      // Agreement of 2+ frames is useful evidence, not a guarantee of accuracy.
+      // Agreement across frames reduces misreads but cannot guarantee correctness.
       const consistent = winner && winner.votes >= 2 && (candidates[1]?.votes || 0) === 0;
       setReview({
-        preview,
+        preview: winner ? previewsByValue.get(winner.value) : fallbackPreview,
         candidates,
         status: !winner ? "unreadable" : consistent ? "consistent" : candidates.length > 1 ? "conflict" : "single",
         frames: validFrameCount,
@@ -310,7 +354,7 @@ export default function BarcodeCamera({ onAdd, onClose, replaceId = null }) {
       setCameraState("live");
     } catch (error) {
       if (isValid()) {
-        setReview({ preview, candidates: [], status: "unreadable", frames: validFrameCount });
+        setReview({ preview: fallbackPreview, candidates: [], status: "unreadable", frames: validFrameCount });
         setValue("");
         setCameraState("live");
         setCameraError(error?.message || "Capture failed. Please try again.");
@@ -412,7 +456,7 @@ export default function BarcodeCamera({ onAdd, onClose, replaceId = null }) {
             </label>}
           </div>
 
-          <div className={styles.viewer}>
+          <div className={styles.viewer} ref={viewerRef}>
             <video className={styles.video} ref={videoRef} playsInline muted autoPlay />
             {review?.preview ? <img className={styles.frozen} src={review.preview} alt="Frame captured from the camera. Compare this barcode with the decoded ID." /> : null}
             {!review && active && <div className={styles.guides} aria-hidden="true"><span className={styles.guideCornerA} /><span className={styles.guideCornerB} /><span className={styles.guideCornerC} /><span className={styles.guideCornerD} /></div>}
@@ -421,7 +465,7 @@ export default function BarcodeCamera({ onAdd, onClose, replaceId = null }) {
             {!review && cameraState === "decoding" && <div className={styles.viewerOverlay}>Checking several frames…</div>}
             {review?.status === "manual" && <div className={styles.viewerOverlay}>Manual entry</div>}
           </div>
-          <div className={styles.smallNote}>{review ? "Captured image is kept only in memory until Retake or Done." : "Center the whole barcode inside the guide. Hold still and tap Capture."}</div>
+          <div className={styles.smallNote}>{review ? "Captured image is kept only in memory until Retake or Done." : "Center the full barcode within the guide. Move back if the sides are cut off; hold still and tap Capture."}</div>
 
           {zoomRange && active && !captured && <label className={styles.zoom}><span>Zoom {zoom.toFixed(1)}×</span><input type="range" min={zoomRange.min} max={zoomRange.max} step={zoomRange.step} value={zoom} onChange={(event) => changeZoom(event.target.value)} /></label>}
           {torchSupported && active && !captured && <button className={styles.secondary} onClick={toggleTorch}>{torchOn ? "Turn flashlight off" : "Turn flashlight on"}</button>}
