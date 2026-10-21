@@ -123,7 +123,7 @@ export default function WipPage() {
     <main className="app-shell">
       <header className="topbar">
         <div className="topbar-inner">
-          <Link href="/" className="brand">Locker</Link>
+          <Link href="/" className="brand">myIST</Link>
           <nav className="nav-tabs" aria-label="Main navigation">
             <Link href="/" className="nav-tab">Collect</Link>
             <Link href="/wip" className="nav-tab active" aria-current="page">WIP</Link>

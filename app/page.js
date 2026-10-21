@@ -929,7 +929,7 @@ export default function Home() {
 
           >
 
-            Locker
+            myIST
 
           </Link>
 
