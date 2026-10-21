@@ -2,7 +2,8 @@
 
 
 
-import Link from "next/link";
+import { useOfflineRuntime } from "../lib/useOfflineRuntime";
+import { notifyQueueChanged, queueWip, pendingEntries, readStoredDraft, writeStoredDraft } from "../lib/offlineQueue";
 
 import BarcodeCamera from "./components/BarcodeCamera";
 
@@ -26,7 +27,6 @@ import {
 
 import {
 
-  sendToWip,
 
   subscribeToWip,
 
@@ -36,7 +36,6 @@ import {
 
 const DRAFT_CACHE_KEY = "locker-collect-draft-v1";
 
-const DRAFT_CACHE_DURATION = 24 * 60 * 60 * 1000;
 
 const DRAFT_SAVE_DEBOUNCE = 400;
 
@@ -86,11 +85,7 @@ function readDraft() {
 
     if (
 
-      !cache.savedAt ||
-
-      !Array.isArray(cache.data) ||
-
-      Date.now() - cache.savedAt > DRAFT_CACHE_DURATION
+      !Array.isArray(cache.data)
 
     ) {
 
@@ -102,7 +97,7 @@ function readDraft() {
 
     // Older drafts contain only the ID array. Keep them intact.
 
-    return { data: cache.data };
+    return { data: cache.data, savedAt: Number(cache.savedAt || 0) };
 
   } catch {
 
@@ -257,6 +252,7 @@ export default function Home() {
   const [draftIds, setDraftIds] = useState([]);
 
   const [wipItems, setWipItems] = useState([]);
+  const { online, pending, lastSync, storageError, refresh } = useOfflineRuntime();
 
 
 
@@ -285,15 +281,21 @@ export default function Home() {
 
 
   useEffect(() => {
-
-    const draft = readDraft();
-
-    setDraftIds(draft.data);
-
-
-    setDraftLoaded(true);
-
-
+    let active = true;
+    (async () => {
+      const local = readDraft();
+      let stored = null;
+      try { stored = await readStoredDraft(); } catch (error) { console.warn("Draft backup unavailable:", error); }
+      if (!active) return;
+      // Prefer the newest saved snapshot; keep existing drafts from old versions.
+      const newest = stored && stored.savedAt > (local.savedAt || 0) ? stored.ids : local.data;
+      let pendingIds = [];
+      try { pendingIds = (await pendingEntries()).map((entry) => entry.internalId); }
+      catch (error) { console.warn("Could not inspect pending IDs:", error); }
+      if (!active) return;
+      setDraftIds((Array.isArray(newest) ? newest : []).filter((id) => !pendingIds.includes(id)));
+      setDraftLoaded(true);
+    })();
 
     const unsubscribe = subscribeToWip(
 
@@ -315,7 +317,7 @@ export default function Home() {
 
 
 
-    return unsubscribe;
+    return () => { active = false; unsubscribe(); };
 
   }, []);
 
@@ -335,10 +337,12 @@ export default function Home() {
 
 
 
+    // Synchronous mirror protects the last scan if the app closes immediately.
+    writeDraft(draftIds);
     const timer = setTimeout(() => {
-
-      writeDraft(draftIds);
-
+      void writeStoredDraft(draftIds).catch((error) => {
+        console.warn("IndexedDB draft backup failed:", error);
+      });
     }, DRAFT_SAVE_DEBOUNCE);
 
 
@@ -776,133 +780,41 @@ export default function Home() {
 
 
   async function handleSendToWip(selectedOnly = false) {
-
-    if (
-
-      (selectedOnly ? selectedIds.size === 0 : draftIds.length === 0) ||
-
-      sending
-
-    ) {
-
-      return;
-
-    }
-
-
-
-    if (!connected) {
-
-      showMessage(
-
-        "WIP is currently unavailable. Your IDs are still saved on this device.",
-
-        "error"
-
-      );
-
-
-
-      return;
-
-    }
-
-
-
+    if ((selectedOnly ? selectedIds.size === 0 : draftIds.length === 0) || sending) return;
     const sendingIds = selectedOnly ? draftIds.filter((id) => selectedIds.has(id)) : [...draftIds];
-
     const assignedName = signatureName.trim();
-
     if (!assignedName || assignedName.length > 250) {
-
       showMessage("Enter a Signed By name (1–250 characters) before sending to WIP.", "error");
-
       return;
-
     }
-
-
-
     setSending(true);
-
-
-
     try {
-
-      const result =
-
-        await sendToWip(sendingIds, assignedName);
-
-
-
-      const completed = new Set([
-
-        ...result.added,
-
-        ...result.skipped,
-
-      ]);
-
-
-
-      setDraftIds((current) =>
-
-        current.filter((id) => !completed.has(id))
-
-      );
-
-      setSelectedIds((current) => new Set([...current].filter((id) => !completed.has(id))));
-
-
-
-      if (result.failed.length) {
-
-        showMessage(
-
-          `${result.added.length} sent · ${result.failed.length} could not be sent and remain here`,
-
-          "error"
-
-        );
-
-      } else {
-
-        showMessage(
-
-          result.added.length === 1
-
-            ? "1 ID sent to WIP"
-
-            : `${result.added.length} IDs sent to WIP`
-
-        );
-
-      }
-
-    } catch (error) {
-
+      // This must commit to IndexedDB BEFORE removing IDs from Collect.
+      const result = await queueWip(sendingIds, assignedName);
+      const safelyQueued = new Set([...result.queued, ...result.alreadyQueued]);
+      // Keep the localStorage draft mirror in step immediately; queued IDs are
+      // also excluded on reload using the outbox, even after a sudden crash.
+      const remaining = draftIds.filter((id) => !safelyQueued.has(id));
+      writeDraft(remaining);
+      try { await writeStoredDraft(remaining); }
+      catch (error) { console.warn("Draft backup unavailable, queued IDs are still safe in IndexedDB:", error); }
+      setDraftIds((current) => current.filter((id) => !safelyQueued.has(id)));
+      setSelectedIds((current) => new Set([...current].filter((id) => !safelyQueued.has(id))));
+      notifyQueueChanged();
+      void refresh();
       showMessage(
-
-        error?.message ||
-
-          "Could not send to WIP. Your IDs remain saved here.",
-
-        "error"
-
+        online
+          ? `${result.queued.length} ID${result.queued.length === 1 ? "" : "s"} saved on device · syncing to WIP`
+          : `${result.queued.length} ID${result.queued.length === 1 ? "" : "s"} saved on device · will sync automatically`,
+        "success"
       );
-
+    } catch (error) {
+      showMessage(error?.message || "Could not save the submission on this device. IDs remain in Collect.", "error");
     } finally {
-
       setSending(false);
-
-
-
       inputRef.current?.focus();
-
     }
-
   }
-
 
 
   return (
@@ -921,7 +833,7 @@ export default function Home() {
 
         <div className="topbar-inner">
 
-          <Link
+          <a
 
             href="/"
 
@@ -929,15 +841,15 @@ export default function Home() {
 
           >
 
-            myIST
+            Locker
 
-          </Link>
+          </a>
 
 
 
           <nav className="nav-tabs">
 
-            <Link
+            <a
 
               href="/"
 
@@ -947,11 +859,11 @@ export default function Home() {
 
               Collect
 
-            </Link>
+            </a>
 
 
 
-            <Link
+            <a
 
               href="/wip"
 
@@ -973,7 +885,7 @@ export default function Home() {
 
               )}
 
-            </Link>
+            </a>
 
 
 
@@ -989,7 +901,7 @@ export default function Home() {
 
               className={`sync-dot ${
 
-                connected ? "online" : ""
+                online ? "online" : ""
 
               }`}
 
@@ -997,11 +909,9 @@ export default function Home() {
 
 
 
-            {connected
-
-              ? "Synced"
-
-              : "Offline"}
+            {online
+              ? pending > 0 ? `${pending} pending` : "Online"
+              : pending > 0 ? `Offline · ${pending} pending` : "Offline"}
 
           </div>
 
@@ -1010,6 +920,20 @@ export default function Home() {
       </header>
 
 
+
+      {(pending > 0 || storageError || (lastSync && Date.now() - lastSync.at < 180000 && (lastSync.added || lastSync.skipped || lastSync.failed))) && (
+        <div role="status" aria-live="polite" style={{ padding: "9px 16px", background: "#f4f6f8", color: "#233343", fontSize: 13, textAlign: "center" }}>
+          {storageError ? `Offline storage unavailable: ${storageError}. Do not close this page with unsent IDs.` : (
+            <>
+              {pending > 0 && <span>{pending} ID{pending === 1 ? "" : "s"} saved on this device · {online ? "syncing automatically" : "waiting for internet"}</span>}
+              {lastSync && Date.now() - lastSync.at < 180000 && (lastSync.added > 0 || lastSync.skipped > 0) && (
+                <span>{pending > 0 ? " · " : ""}{lastSync.added > 0 ? `${lastSync.added} sent to WIP` : ""}{lastSync.added > 0 && lastSync.skipped > 0 ? " · " : ""}{lastSync.skipped > 0 ? `${lastSync.skipped} already existed` : ""}</span>
+              )}
+              {lastSync?.failed > 0 && <span> · Sync could not finish; pending IDs will retry</span>}
+            </>
+          )}
+        </div>
+      )}
 
       {/* ===================================================
 
@@ -1307,7 +1231,7 @@ export default function Home() {
 
                   </label>
 
-                  {selectedIds.size > 0 && <button className="quiet-button" disabled={sending || !connected || !signatureName.trim()} onClick={() => handleSendToWip(true)}>Send selected ({selectedIds.size}) to WIP</button>}
+                  {selectedIds.size > 0 && <button className="quiet-button" disabled={sending || Boolean(storageError) || !signatureName.trim()} onClick={() => handleSendToWip(true)}>Send selected ({selectedIds.size}) to WIP</button>}
 
                   {selectedIds.size > 0 && <button className="quiet-button danger-text" onClick={removeSelectedDraft}>Remove selected ({selectedIds.size})</button>}
 
@@ -1481,7 +1405,7 @@ export default function Home() {
 
                   sending ||
 
-                  !connected ||
+                  Boolean(storageError) ||
 
                   !signatureName.trim()
 

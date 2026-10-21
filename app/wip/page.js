@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import { useOfflineRuntime } from "../../lib/useOfflineRuntime";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { collection, limit, onSnapshot, orderBy, query, startAfter, where } from "firebase/firestore";
 import { db } from "../../lib/firebase";
@@ -53,6 +53,7 @@ export default function WipPage() {
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const lastVisibleRef = useRef(null);
+  const { online, pending, lastSync } = useOfflineRuntime();
 
   useEffect(() => {
     const constraints = [
@@ -82,11 +83,13 @@ export default function WipPage() {
       setConnection(snapshot.metadata.fromCache ? "cached" : "synced");
     }, (cause) => {
       lastVisibleRef.current = null;
-      setItems([]);
+      // Keep the most recently shown/cached data visible when the network drops.
       setHasNext(false);
       setLoading(false);
       setConnection("error");
-      setError(cause?.message || "Unable to load WIP records.");
+      setError(navigator.onLine === false
+        ? "Offline: showing any previously cached WIP data. New submissions will appear after synchronization."
+        : cause?.message || "Unable to load WIP records.");
     });
     return unsubscribe;
   }, [page.cursor]);
@@ -123,25 +126,35 @@ export default function WipPage() {
     <main className="app-shell">
       <header className="topbar">
         <div className="topbar-inner">
-          <Link href="/" className="brand">myIST</Link>
+          <a href="/" className="brand">Locker</a>
           <nav className="nav-tabs" aria-label="Main navigation">
-            <Link href="/" className="nav-tab">Collect</Link>
-            <Link href="/wip" className="nav-tab active" aria-current="page">WIP</Link>
+            <a href="/" className="nav-tab">Collect</a>
+            <a href="/wip" className="nav-tab active" aria-current="page">WIP</a>
           </nav>
           <div className="sync-status">
-            <span className={`sync-dot ${connection === "synced" ? "online" : ""}`} />
-            {connection === "synced" ? "Synced" : connection === "cached" ? "Cached" : connection === "error" ? "Offline" : "Connecting"}
+            <span className={`sync-dot ${online ? "online" : ""}`} />
+            {!online ? "Offline" : pending ? `${pending} pending` : connection === "synced" ? "Synced" : connection === "cached" ? "Cached" : "Connecting"}
           </div>
         </div>
       </header>
 
+      {(pending > 0 || (lastSync && Date.now() - lastSync.at < 180000 && (lastSync.added || lastSync.skipped || lastSync.failed))) && (
+        <div role="status" style={{ padding: "9px 16px", background: "#f4f6f8", color: "#233343", fontSize: 13, textAlign: "center" }}>
+          {pending > 0 && `${pending} ID${pending === 1 ? "" : "s"} saved on device · ${online ? "syncing to WIP" : "waiting for internet"}`}
+          {lastSync && Date.now() - lastSync.at < 180000 && (lastSync.added > 0 || lastSync.skipped > 0) && (
+            <span>{pending > 0 ? " · " : ""}{lastSync.added > 0 ? `${lastSync.added} sent to WIP` : ""}{lastSync.added > 0 && lastSync.skipped > 0 ? " · " : ""}{lastSync.skipped > 0 ? `${lastSync.skipped} already existed` : ""}</span>
+          )}
+          {lastSync?.failed > 0 && <span> · Sync could not finish; pending IDs will retry</span>}
+        </div>
+      )}
       <div className={styles.shell}>
         <section className={styles.heading}>
           <div>
-            <p className={styles.eyebrow}>Live Package queue</p>
+            <p className={styles.eyebrow}>Package queue</p>
             <h1>Work in Progress</h1>
+            <p>Packages submitted for processing. Sign-outs are handled by the owner.</p>
           </div>
-          <Link className={styles.collectLink} href="/">+ Collect IDs</Link>
+          <a className={styles.collectLink} href="/">+ Collect IDs</a>
         </section>
 
         <section className={styles.panel} aria-label="WIP packages">
