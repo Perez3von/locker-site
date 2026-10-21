@@ -171,3 +171,33 @@
   .privacy { margin-bottom: 12px; }
 }
 @media(max-width: 370px) { .reviewActions { grid-template-columns: 1fr; } .header { gap: 7px; } .heading strong { font-size: 16px; } .done { font-size: 12px; } }
+
+/* Android still-photo review is shown in full. It is never cropped to the
+   wide live-video guide, which has a different native aspect ratio. */
+.wholePhoto { object-fit: contain; background: #101c28; }
+.nativeInput { display: none; }
+.stop, .manual, .linkButton {
+  border: 0;
+  background: none;
+  color: #1c5ca9;
+  cursor: pointer;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 650;
+  min-height: 42px;
+  text-align: center;
+}
+.stop { color: #9d3331; }
+.actions { grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr); align-items: stretch; }
+.actions .primary, .actions .secondary { min-width: 0; }
+.reviewExtras { display: flex; flex-wrap: wrap; gap: 8px; justify-content: space-between; margin-top: 9px; }
+.advanced { margin-top: 7px; padding: 8px 10px; border: 1px solid #e8edf2; border-radius: 11px; }
+.advanced summary { cursor: pointer; font-size: 13px; font-weight: 650; color: #50637b; min-height: 32px; display: flex; align-items: center; }
+.advancedBody { display: grid; gap: 10px; padding: 10px 0 3px; }
+.slider { display: flex; align-items: center; gap: 10px; font-size: 13px; color: #536070; }
+.slider input { flex: 1; min-width: 0; accent-color: #176cda; }
+@media (max-width: 640px) {
+  .actions { position: relative; margin-top: 10px; }
+  .actions .primary, .actions .secondary { min-height: 54px; padding: 9px 8px; }
+  .reviewExtras { flex-direction: row; }
+}
